@@ -30,12 +30,10 @@ from .config import (
 )
 from .db import Base, engine, get_db
 from .grounding import (
-    best_matching_camera,
     build_fleet_prompt,
     build_grounded_prompt,
-    is_fleet_vision_question,
-    is_metadata_question,
     metadata_answer,
+    route_question,
 )
 from .models import Camera, ChatMessage
 from .vlm import vlm
@@ -410,17 +408,28 @@ def clear_chat_history(db: Session = Depends(get_db)):
 @app.post("/api/chat")
 def chat(req: ChatRequest, db: Session = Depends(get_db)):
     all_cameras = db.query(Camera).order_by(Camera.created_at).all()
+    if not all_cameras:
+        raise HTTPException(status_code=400, detail="No cameras configured yet.")
 
     history = _recent_history(db)
     _save_turn(db, "user", req.question)
 
-    # 1. Fleet metadata — answerable from the database alone.
-    if is_metadata_question(req.question):
+    scope, camera = route_question(req.question, all_cameras, req.focused_camera_id)
+    log.info("Chat scope=%s camera=%s q=%r", scope, camera.name if camera else "-", req.question)
+
+    # Answerable from the database alone — no vision needed, and no chance
+    # of the model inventing a number it can't see.
+    if scope == "metadata":
         camera_dicts = [_camera_out(c) for c in all_cameras]
         answer = metadata_answer(req.question, camera_dicts)
         used = [c["id"] for c in camera_dicts]
         _save_turn(db, "assistant", answer, cameras_used=used)
-        return {"question": req.question, "answer": answer, "cameras_used": used}
+        return {
+            "question": req.question,
+            "answer": answer,
+            "cameras_used": used,
+            "scope": scope,
+        }
 
     if not vlm.ready:
         raise HTTPException(
@@ -428,8 +437,8 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
             detail=vlm.error or "Model is still loading, please wait a moment.",
         )
 
-    # 2. Fleet vision — one current frame from every online camera.
-    if is_fleet_vision_question(req.question):
+    # One current frame from every camera that has one.
+    if scope == "fleet":
         images = []
         used_cameras = []
         for cam in all_cameras:
@@ -443,7 +452,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
 
         prompt = build_fleet_prompt(used_cameras, req.question)
         try:
-            answer = vlm.ask(images, prompt, history=history)
+            answer = vlm.ask(images, prompt, history=history, max_new_tokens=768)
         except Exception as exc:  # noqa: BLE001
             log.exception("Fleet inference failed")
             raise HTTPException(status_code=500, detail=str(exc))
@@ -456,22 +465,10 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
             "answer": answer,
             "cameras_used": used,
             "snapshot": snapshot,
+            "scope": scope,
         }
 
-    # 3. A specific camera, named or matched by zone/tag.
-    # 4. Otherwise fall back to whatever the user has focused in the UI.
-    camera = best_matching_camera(req.question, all_cameras)
-    if camera is None and req.focused_camera_id:
-        camera = next((c for c in all_cameras if c.id == req.focused_camera_id), None)
-    if camera is None and len(all_cameras) == 1:
-        camera = all_cameras[0]
-
-    if camera is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Couldn't tell which camera you mean — try naming it, or select one first.",
-        )
-
+    # A camera the user named, or the one they're looking at.
     images = _frame_sequence_to_images(camera.id, CHAT_FRAMES_SINGLE_CAMERA)
     if not images:
         raise HTTPException(status_code=503, detail=f"Camera '{camera.name}' has no frame yet.")
@@ -491,6 +488,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
         "answer": answer,
         "cameras_used": [camera.id],
         "snapshot": snapshot,
+        "scope": scope,
     }
 
 

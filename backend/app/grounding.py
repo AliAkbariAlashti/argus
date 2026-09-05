@@ -17,26 +17,53 @@ _METADATA_PATTERNS = [
 ]
 _METADATA_RE = re.compile("|".join(_METADATA_PATTERNS), re.IGNORECASE)
 
-# Phrases signaling the question wants to be checked against every camera's
-# current view, not just one ("is anyone in the building", "check everywhere").
+# Phrases that are unambiguously about the whole fleet, even if the question
+# also happens to mention a place ("is anyone in the server room or anywhere
+# else"). These force a fleet search regardless of camera matching.
 _FLEET_VISION_PATTERNS = [
-    r"\ball cameras?\b",
+    r"\ball (the )?cameras?\b",
     r"\bevery camera\b",
     r"\bany camera\b",
+    r"\bany (of the )?(feeds?|views?)\b",
     r"\banywhere\b",
     r"\bacross (the|all) (building|site|cameras?)\b",
-    r"\bwhole (building|site|facility)\b",
-    r"\bentire (building|site|facility)\b",
+    r"\b(whole|entire) (building|site|facility|place)\b",
 ]
 _FLEET_VISION_RE = re.compile("|".join(_FLEET_VISION_PATTERNS), re.IGNORECASE)
+
+# Questions that ask the system to *locate* something — the answer is which
+# camera, so they only make sense against the whole fleet. This is the case
+# that used to silently collapse to one camera and give a confidently wrong
+# answer ("where is the crowd of people shown?").
+_SEARCH_PATTERNS = [
+    r"\bwhere\b",
+    r"\bwhich (camera|feed|one|area|zone|room|place|location)\b",
+    r"\bfind\b",
+    r"\bsearch\b",
+    r"\blocate\b",
+    r"\bany(one|body|thing)\b",
+    r"\bis there\b",
+    r"\bare there\b",
+    r"\bhow many people\b",
+    r"\bcount\b",
+    r"\bwho (is|are)\b",
+]
+_SEARCH_RE = re.compile("|".join(_SEARCH_PATTERNS), re.IGNORECASE)
 
 
 def is_metadata_question(question: str) -> bool:
     return bool(_METADATA_RE.search(question))
 
 
-def is_fleet_vision_question(question: str) -> bool:
+def is_explicit_fleet_question(question: str) -> bool:
+    """Question names the fleet outright — always search everything."""
     return bool(_FLEET_VISION_RE.search(question))
+
+
+def is_search_question(question: str) -> bool:
+    """Question asks *where/whether* something is, so the answer is which
+    camera shows it. Meaningless against a single feed."""
+    return bool(_SEARCH_RE.search(question))
 
 
 def _tokenize(text: str) -> set[str]:
@@ -116,6 +143,75 @@ def best_matching_camera(question: str, cameras: list):
     return scored[0][1]
 
 
+# A camera has to be named deliberately — by its name or an explicit zone
+# tag — to narrow a question to it. Incidental overlap with a camera's prose
+# description is not enough; that's what used to route "where is the crowd?"
+# to a single hallway camera and answer it confidently and uselessly.
+NAMED_CAMERA_THRESHOLD = 2.5
+
+
+def route_question(question: str, cameras: list, focused_camera_id=None):
+    """Decides what a question should be answered against.
+
+    Returns (scope, camera) where scope is:
+      "metadata" — answerable from the DB alone, no vision needed.
+      "single"   — one camera, in `camera`.
+      "fleet"    — every camera.
+
+    The default is deliberately "fleet": this is a fleet monitoring tool, so
+    searching everything is the sane default and a single camera is the
+    narrow case the user opts into by naming a place. Getting this backwards
+    means any phrasing we failed to anticipate silently answers from one
+    arbitrary camera — which reads as the product not understanding the
+    question at all.
+    """
+    if is_metadata_question(question):
+        return "metadata", None
+
+    # Explicit "all cameras / anywhere" always wins, even if a place is named.
+    if is_explicit_fleet_question(question):
+        return "fleet", None
+
+    match = best_matching_camera(question, cameras)
+    named = (
+        match is not None
+        and camera_match_score(question, match) >= NAMED_CAMERA_THRESHOLD
+    )
+
+    if named:
+        # A named place plus a locating question ("where else is anyone?")
+        # still wants the fleet; a named place alone narrows to that camera.
+        if is_search_question(question) and _mentions_other_scope(question):
+            return "fleet", None
+        return "single", match
+
+    # No camera named. "Where/which/is there/how many" is a search over
+    # everything by definition.
+    if is_search_question(question):
+        return "fleet", None
+
+    # Genuinely ambiguous ("what is happening?"). If the user is looking at
+    # a camera, answer about that one — otherwise search everything rather
+    # than picking one arbitrarily.
+    if focused_camera_id:
+        focused = next((c for c in cameras if c.id == focused_camera_id), None)
+        if focused is not None:
+            return "single", focused
+
+    return "fleet", None
+
+
+_OTHER_SCOPE_RE = re.compile(
+    r"\b(else|other|others|too|also|rest|remaining)\b", re.IGNORECASE
+)
+
+
+def _mentions_other_scope(question: str) -> bool:
+    """"...anywhere else", "any other camera" — widens a named-camera
+    question back out to the fleet."""
+    return bool(_OTHER_SCOPE_RE.search(question))
+
+
 def build_grounded_prompt(camera, question: str, frame_count: int = 1) -> str:
     """Wraps the user's question with a short grounding preamble describing
     the camera, so the VLM's answer is contextualized without needing a
@@ -145,18 +241,33 @@ def build_grounded_prompt(camera, question: str, frame_count: int = 1) -> str:
 def build_fleet_prompt(cameras: list, question: str) -> str:
     """Wraps a question with a preamble listing every camera whose current
     frame is attached (in the same order), so the model can attribute what
-    it sees in each image to the right camera by name."""
+    it sees in each image to the right camera by name.
+
+    The output instructions matter as much as the listing: without them the
+    model tends to merge several feeds into one vague paragraph, which loses
+    the single most useful part of the answer — *which camera*."""
     lines = [
-        f"{i + 1}. \"{cam.name}\" — {cam.location} (tags: {', '.join(cam.zone_tags or []) or 'none'})"
+        f"Image {i + 1} = camera \"{cam.name}\" ({cam.location}"
+        + (f"; tags: {', '.join(cam.zone_tags)}" if cam.zone_tags else "")
+        + ")"
         for i, cam in enumerate(cameras)
     ]
     listing = "\n".join(lines)
+    n = len(cameras)
+
     return (
-        "You are viewing live feeds from multiple CCTV cameras at once. "
-        "Each image below is the current frame from one camera, in this order:\n"
+        f"You are a CCTV monitoring analyst reviewing {n} security cameras at "
+        "the same site. Each attached image is the current frame from a "
+        "different camera:\n"
         f"{listing}\n\n"
-        "When answering, refer to cameras by name and say which camera(s) "
-        "your observation comes from.\n\n"
+        "Instructions:\n"
+        f"- Examine all {n} images before answering.\n"
+        "- Always identify cameras by name, never as \"image 1\" or \"the first image\".\n"
+        "- If the answer is on some cameras but not others, say which ones, "
+        "and briefly note the cameras where it is absent.\n"
+        "- If it appears on no camera, say so plainly.\n"
+        "- Be specific and concise. Do not describe cameras that are not "
+        "relevant to the question.\n\n"
         f"Question: {question}"
     )
 
