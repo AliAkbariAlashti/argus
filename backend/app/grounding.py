@@ -31,24 +31,34 @@ _FLEET_VISION_PATTERNS = [
 ]
 _FLEET_VISION_RE = re.compile("|".join(_FLEET_VISION_PATTERNS), re.IGNORECASE)
 
-# Questions that ask the system to *locate* something — the answer is which
-# camera, so they only make sense against the whole fleet. This is the case
-# that used to silently collapse to one camera and give a confidently wrong
-# answer ("where is the crowd of people shown?").
-_SEARCH_PATTERNS = [
+# Questions that ask the system to *locate* something — the answer IS which
+# camera, so a focused camera can never satisfy them; checking the fleet is
+# not optional. This is the case that used to silently collapse to one
+# camera and give a confidently wrong answer ("where is the crowd shown?").
+_LOCATE_PATTERNS = [
     r"\bwhere\b",
     r"\bwhich (camera|feed|one|area|zone|room|place|location)\b",
     r"\bfind\b",
     r"\bsearch\b",
     r"\blocate\b",
+    r"\bwho (is|are)\b",
+]
+_LOCATE_RE = re.compile("|".join(_LOCATE_PATTERNS), re.IGNORECASE)
+
+# Questions that ask about presence/count in whatever is currently being
+# looked at ("is there anyone?", "how many people?"). These have a perfectly
+# good answer scoped to one feed — if the user has a camera focused, that IS
+# the scope they mean, same as the existing suggested-prompt chips. Only
+# default to searching the fleet when nothing is focused, unlike _LOCATE_RE
+# above which always means "check everywhere."
+_PRESENCE_PATTERNS = [
     r"\bany(one|body|thing)\b",
     r"\bis there\b",
     r"\bare there\b",
     r"\bhow many people\b",
     r"\bcount\b",
-    r"\bwho (is|are)\b",
 ]
-_SEARCH_RE = re.compile("|".join(_SEARCH_PATTERNS), re.IGNORECASE)
+_PRESENCE_RE = re.compile("|".join(_PRESENCE_PATTERNS), re.IGNORECASE)
 
 
 def is_metadata_question(question: str) -> bool:
@@ -60,10 +70,17 @@ def is_explicit_fleet_question(question: str) -> bool:
     return bool(_FLEET_VISION_RE.search(question))
 
 
-def is_search_question(question: str) -> bool:
-    """Question asks *where/whether* something is, so the answer is which
-    camera shows it. Meaningless against a single feed."""
-    return bool(_SEARCH_RE.search(question))
+def is_locate_question(question: str) -> bool:
+    """Question asks *where/which camera*, so the answer is meaningless
+    against a single feed — the fleet must always be checked."""
+    return bool(_LOCATE_RE.search(question))
+
+
+def is_presence_question(question: str) -> bool:
+    """Question asks about presence/count in whatever is being looked at.
+    Answerable from one feed; only forces a fleet search when no camera is
+    focused, unlike a locate question."""
+    return bool(_PRESENCE_RE.search(question))
 
 
 def _tokenize(text: str) -> set[str]:
@@ -172,6 +189,11 @@ def route_question(question: str, cameras: list, focused_camera_id=None):
     if is_explicit_fleet_question(question):
         return "fleet", None
 
+    def _focused_camera():
+        if not focused_camera_id:
+            return None
+        return next((c for c in cameras if c.id == focused_camera_id), None)
+
     match = best_matching_camera(question, cameras)
     named = (
         match is not None
@@ -181,22 +203,30 @@ def route_question(question: str, cameras: list, focused_camera_id=None):
     if named:
         # A named place plus a locating question ("where else is anyone?")
         # still wants the fleet; a named place alone narrows to that camera.
-        if is_search_question(question) and _mentions_other_scope(question):
+        if is_locate_question(question) and _mentions_other_scope(question):
             return "fleet", None
         return "single", match
 
-    # No camera named. "Where/which/is there/how many" is a search over
-    # everything by definition.
-    if is_search_question(question):
+    # No camera named. "Where/which camera/find" only has an answer against
+    # the whole fleet — a focused camera can't satisfy "where", since the
+    # question IS asking which camera.
+    if is_locate_question(question):
         return "fleet", None
+
+    # "Is there anyone?" / "how many people?" without a named place: this
+    # has a perfectly good answer scoped to whatever the user is currently
+    # looking at, so a focused camera wins here — same as the ambiguous
+    # case below. Only search the whole fleet if nothing is focused.
+    if is_presence_question(question):
+        focused = _focused_camera()
+        return ("single", focused) if focused else ("fleet", None)
 
     # Genuinely ambiguous ("what is happening?"). If the user is looking at
     # a camera, answer about that one — otherwise search everything rather
     # than picking one arbitrarily.
-    if focused_camera_id:
-        focused = next((c for c in cameras if c.id == focused_camera_id), None)
-        if focused is not None:
-            return "single", focused
+    focused = _focused_camera()
+    if focused:
+        return "single", focused
 
     return "fleet", None
 
