@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sentinel Vision</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <span class="brand-name">Sentinel<span class="brand-accent">Vision</span></span>
+      </div>
+      <div class="topbar-status">
+        <span id="model-status" class="pill pill-loading">
+          <span class="dot"></span> Loading model…
+        </span>
+        <span class="clock" id="clock"></span>
+      </div>
+    </header>
+
+    <div class="body">
+      <aside class="sidebar">
+        <div class="sidebar-title">Cameras</div>
+        <div id="camera-list" class="camera-list"></div>
+      </aside>
+
+      <main class="main">
+        <section class="viewer">
+          <div class="viewer-header">
+            <div>
+              <div class="viewer-title" id="viewer-title">Select a camera</div>
+              <div class="viewer-location" id="viewer-location">&nbsp;</div>
+            </div>
+            <div class="live-badge"><span class="dot dot-live"></span>LIVE</div>
+          </div>
+          <div class="viewer-frame">
+            <img id="viewer-stream" class="viewer-stream" alt="Camera stream" />
+            <div id="viewer-placeholder" class="viewer-placeholder">
+              Choose a camera from the left to begin monitoring
+            </div>
+          </div>
+        </section>
+
+        <section class="chat">
+          <div class="chat-header">
+            <span>AI Analyst</span>
+            <span class="chat-sub">Ask about what the selected camera can currently see</span>
+          </div>
+
+          <div id="chat-log" class="chat-log">
+            <div class="chat-empty" id="chat-empty">
+              No conversation yet. Try one of the prompts below, or ask your own question.
+            </div>
+          </div>
+
+          <div id="prompt-chips" class="prompt-chips"></div>
+
+          <form id="chat-form" class="chat-form">
+            <input
+              id="chat-input"
+              class="chat-input"
+              type="text"
+              placeholder="Ask what's happening on this camera…"
+              autocomplete="off"
+            />
+            <button type="submit" class="chat-send" id="chat-send">Ask</button>
+          </form>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

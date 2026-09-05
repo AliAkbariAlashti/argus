@@ -1,0 +1,17 @@
+# Matches the versions already installed in the target VM's venv (~/dok/venv).
+# This file is for reference / reproducing the env elsewhere — on the VM itself,
+# nothing needs to be (re)installed.
+torch==2.12.1
+torchvision==0.27.1
+transformers==5.8.0
+accelerate==1.14.0
+qwen-vl-utils==0.0.14
+decord==0.6.0
+av==18.1.0
+pillow==12.2.0
+opencv-python-headless==5.0.0.93
+fastapi==0.141.1
+uvicorn==0.52.0
+pydantic==2.13.4
+numpy==2.5.1
+python-multipart==0.0.20
