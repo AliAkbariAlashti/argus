@@ -41,7 +41,7 @@ docker compose up -d          # starts Postgres on :5432
 source ~/dok/venv/bin/activate   # existing venv already has torch/transformers/etc.
 pip install sqlalchemy "psycopg[binary]"   # new deps for camera CRUD storage
 
-bash backend/run.sh              # starts on :8000
+bash backend/run.sh              # starts in the background, on :8000
 ```
 
 Then open `http://<vm-ip>:8000` in a browser.
@@ -50,6 +50,20 @@ First request after startup will be slow while Qwen2.5-VL-7B loads into GPU
 memory (~15-20s). Check `/api/status` to see when `model_ready` is `true`.
 On first boot, the cameras table is empty and gets seeded automatically with
 the 4 sample videos in `videos/`.
+
+### Managing the background process
+
+`backend/run.sh` starts the server detached (via `nohup`) and returns immediately,
+tracking it with a PID file so it survives closing the SSH session.
+
+```bash
+bash backend/status.sh   # confirms it's running + hits /api/status
+bash backend/stop.sh     # stops it
+tail -f backend/server.log   # follow logs
+```
+
+`run.sh` refuses to start a second instance while one is already running —
+run `stop.sh` first if you need to restart.
 
 ### Config
 
