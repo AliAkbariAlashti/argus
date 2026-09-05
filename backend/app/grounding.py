@@ -43,49 +43,101 @@ def _tokenize(text: str) -> set[str]:
     return set(_WORD_RE.findall(text.lower()))
 
 
-def camera_match_score(question: str, camera) -> int:
-    """Cheap keyword overlap between a question and a camera's metadata
-    (name, location, zone tags, description). Higher is a better match.
-    Used to find which camera(s) a free-form question like "what's in the
-    parking lot" refers to, without hitting the VLM at all for routing."""
-    q_tokens = _tokenize(question)
+# Words too common to indicate which camera someone means. Without this,
+# a question sharing filler words with a camera's description can outrank
+# an actual name match.
+_STOPWORDS = {
+    "a", "an", "and", "any", "anything", "are", "at", "be", "can", "do",
+    "does", "for", "happening", "has", "have", "how", "i", "in", "is",
+    "it", "many", "me", "much", "of", "on", "or", "see", "show", "someone",
+    "something", "that", "the", "there", "they", "this", "to", "us", "we",
+    "what", "when", "where", "which", "who", "why", "with", "you", "camera",
+    "cameras", "feed", "feeds", "view", "now", "right", "currently",
+}
+
+
+def _content_tokens(text: str) -> set[str]:
+    return _tokenize(text) - _STOPWORDS
+
+
+def camera_match_score(question: str, camera) -> float:
+    """How strongly a question refers to this camera, from its metadata.
+    Fields are weighted by how deliberately they identify a camera: an
+    explicit name beats a zone tag, which beats an incidental word shared
+    with the free-text description."""
+    q_tokens = _content_tokens(question)
     if not q_tokens:
-        return 0
+        return 0.0
 
-    haystack = " ".join(
-        [camera.name, camera.location, camera.description, " ".join(camera.zone_tags or [])]
-    )
-    hay_tokens = _tokenize(haystack)
-
-    # zone tags can be multi-word ("parking-lot" / "parking lot"); match those as substrings too
-    score = len(q_tokens & hay_tokens)
     q_text = question.lower()
+    score = 0.0
+
+    # Whole name appearing verbatim ("the east corridor") is the strongest
+    # possible signal.
+    name_lower = (camera.name or "").lower().strip()
+    if name_lower and name_lower in q_text:
+        score += 10.0
+
+    # Partial name overlap ("corridor" for "East Corridor") — covers the
+    # common case of referring to a camera by one distinctive word.
+    name_tokens = _content_tokens(camera.name or "")
+    score += 3.0 * len(q_tokens & name_tokens)
+
+    # Zone tags are explicitly curated for this purpose.
     for tag in camera.zone_tags or []:
-        tag_norm = tag.replace("-", " ").lower()
-        if tag_norm and tag_norm in q_text:
-            score += 2
+        tag_norm = tag.replace("-", " ").lower().strip()
+        if not tag_norm:
+            continue
+        if tag_norm in q_text:
+            score += 2.5
+        else:
+            score += 1.5 * len(q_tokens & _content_tokens(tag_norm))
+
+    score += 1.5 * len(q_tokens & _content_tokens(camera.location or ""))
+    # Description is prose, so treat overlap as weak corroboration only.
+    score += 0.5 * len(q_tokens & _content_tokens(camera.description or ""))
+
     return score
 
 
+# Below this, a "match" is more likely to be an incidental shared word than
+# a real reference to the camera.
+MATCH_THRESHOLD = 1.4
+
+
 def best_matching_camera(question: str, cameras: list):
-    """Returns the single best-matching camera, or None if nothing scores > 0."""
+    """Returns the single best-matching camera, or None if nothing clears
+    the confidence threshold."""
     scored = [(camera_match_score(question, c), c) for c in cameras]
-    scored = [s for s in scored if s[0] > 0]
+    scored = [s for s in scored if s[0] >= MATCH_THRESHOLD]
     if not scored:
         return None
     scored.sort(key=lambda s: s[0], reverse=True)
     return scored[0][1]
 
 
-def build_grounded_prompt(camera, question: str) -> str:
+def build_grounded_prompt(camera, question: str, frame_count: int = 1) -> str:
     """Wraps the user's question with a short grounding preamble describing
     the camera, so the VLM's answer is contextualized without needing a
-    separate retrieval/routing model call."""
+    separate retrieval/routing model call. When several frames are attached
+    they are consecutive moments, so say so — otherwise the model describes
+    them as unrelated images instead of reading movement from them."""
     tags = ", ".join(camera.zone_tags or []) or "none"
+
+    if frame_count > 1:
+        frames_note = (
+            f"The {frame_count} images are consecutive frames from this camera, "
+            "about a second apart, oldest first — use them to judge movement "
+            "and describe the current situation (the last frame is now).\n"
+        )
+    else:
+        frames_note = ""
+
     return (
         f"You are viewing a live feed from camera \"{camera.name}\" "
         f"located at {camera.location}. Zone tags: {tags}. "
-        f"Camera notes: {camera.description or 'none'}.\n\n"
+        f"Camera notes: {camera.description or 'none'}.\n"
+        f"{frames_note}\n"
         f"Question: {question}"
     )
 

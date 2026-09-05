@@ -12,6 +12,29 @@ FRAME_SAMPLE_INTERVAL = float(os.environ.get("FRAME_SAMPLE_INTERVAL", "1.0"))
 # JPEG quality for MJPEG stream / snapshots served to the frontend.
 JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "80"))
 
+# Recent-frame buffer used to give the model a sense of motion. Three frames
+# a second apart is enough to tell "walking toward the door" from "standing
+# still" without tripling VRAM use per request.
+MOTION_BUFFER_SIZE = int(os.environ.get("MOTION_BUFFER_SIZE", "3"))
+MOTION_BUFFER_SECONDS = float(os.environ.get("MOTION_BUFFER_SECONDS", "1.0"))
+
+# Frames sent per camera on a single-camera question. Fleet-wide questions
+# always use one frame per camera to keep the image count manageable.
+CHAT_FRAMES_SINGLE_CAMERA = int(os.environ.get("CHAT_FRAMES_SINGLE_CAMERA", "3"))
+
+# Longest edge (px) of any frame sent to the model. A 7B model in BF16 leaves
+# only a few GB spare on a 20GB card, and a fleet question can attach one
+# frame per camera — downscaling keeps that comfortably inside VRAM without
+# costing meaningful detail at CCTV framing.
+VLM_MAX_IMAGE_EDGE = int(os.environ.get("VLM_MAX_IMAGE_EDGE", "896"))
+
+# How many prior turns of the conversation to replay to the model.
+CHAT_HISTORY_TURNS = int(os.environ.get("CHAT_HISTORY_TURNS", "6"))
+
+# Run a tiny throwaway inference once the model loads, so the first real
+# question doesn't pay the lazy-init cost mid-demo.
+PREWARM_MODEL = os.environ.get("PREWARM_MODEL", "1") not in ("0", "false", "False")
+
 # Seeded on first boot only (when the cameras table is empty), so the demo
 # has content immediately. Afterwards cameras are fully managed via the
 # CRUD API and persisted in Postgres.

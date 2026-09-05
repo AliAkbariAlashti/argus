@@ -1,10 +1,11 @@
 import threading
 import time
 import logging
+from collections import deque
 
 import cv2
 
-from .config import VIDEOS_DIR, JPEG_QUALITY
+from .config import VIDEOS_DIR, JPEG_QUALITY, MOTION_BUFFER_SECONDS, MOTION_BUFFER_SIZE
 
 log = logging.getLogger("qwenvl.camera")
 
@@ -21,8 +22,15 @@ class CameraFeed:
         self._lock = threading.Lock()
         self._frame = None  # latest raw BGR frame
         self._jpeg = None  # latest encoded JPEG bytes
+        # Recent frames spaced ~MOTION_BUFFER_SECONDS apart. A single still
+        # frame can't show motion, so questions like "what is the person
+        # doing" get a short sequence instead of one snapshot.
+        self._history = deque(maxlen=MOTION_BUFFER_SIZE)
+        self._last_history_at = 0.0
         self._running = False
         self._thread = None
+        # Rolling decode-rate measurement, for the health panel.
+        self._frame_times = deque(maxlen=30)
 
     def start(self):
         if self._running:
@@ -56,10 +64,15 @@ class CameraFeed:
             ok, buf = cv2.imencode(
                 ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
             )
+            now = time.monotonic()
             with self._lock:
                 self._frame = frame
                 if ok:
                     self._jpeg = buf.tobytes()
+                if now - self._last_history_at >= MOTION_BUFFER_SECONDS:
+                    self._history.append(frame)
+                    self._last_history_at = now
+                self._frame_times.append(now)
 
             time.sleep(delay)
 
@@ -73,6 +86,30 @@ class CameraFeed:
         """Returns the latest frame as a BGR numpy array, or None."""
         with self._lock:
             return None if self._frame is None else self._frame.copy()
+
+    def get_fps(self) -> float:
+        """Measured decode rate over the recent window, for the health panel."""
+        with self._lock:
+            times = list(self._frame_times)
+        if len(times) < 2:
+            return 0.0
+        span = times[-1] - times[0]
+        return round((len(times) - 1) / span, 1) if span > 0 else 0.0
+
+    def get_frame_sequence(self, count: int = MOTION_BUFFER_SIZE):
+        """Returns up to `count` recent frames (oldest first, ending with the
+        current one) so the model can reason about movement rather than a
+        single instant. Falls back to just the latest frame early on, before
+        the history buffer has filled."""
+        with self._lock:
+            frames = [f.copy() for f in self._history][-count:]
+            latest = None if self._frame is None else self._frame.copy()
+
+        if latest is None:
+            return frames
+        # The buffer lags the live frame by up to MOTION_BUFFER_SECONDS;
+        # always end the sequence on what the camera shows right now.
+        return frames[-(count - 1):] + [latest] if count > 1 else [latest]
 
 
 class CameraRegistry:

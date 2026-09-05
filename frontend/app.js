@@ -27,8 +27,13 @@ const el = {
   chatInput: document.getElementById("chat-input"),
   chatSend: document.getElementById("chat-send"),
 
+  btnClearChat: document.getElementById("btn-clear-chat"),
+
   camerasTable: document.getElementById("cameras-table"),
   btnAddCamera: document.getElementById("btn-add-camera"),
+  railCamerasBadge: document.getElementById("rail-cameras-badge"),
+
+  healthPage: document.getElementById("health-page"),
 
   modalOverlay: document.getElementById("modal-overlay"),
   modalClose: document.getElementById("modal-close"),
@@ -36,6 +41,13 @@ const el = {
   cameraForm: document.getElementById("camera-form"),
   cameraFormError: document.getElementById("camera-form-error"),
   btnSubmitCamera: document.getElementById("btn-submit-camera"),
+
+  editModalOverlay: document.getElementById("edit-modal-overlay"),
+  editModalClose: document.getElementById("edit-modal-close"),
+  btnCancelEditCamera: document.getElementById("btn-cancel-edit-camera"),
+  editCameraForm: document.getElementById("edit-camera-form"),
+  editCameraFormError: document.getElementById("edit-camera-form-error"),
+  btnSubmitEditCamera: document.getElementById("btn-submit-edit-camera"),
 };
 
 const VIEW_TITLES = {
@@ -44,6 +56,7 @@ const VIEW_TITLES = {
   alerts: "Alerts",
   archive: "Archive",
   cameras: "Cameras",
+  health: "System Health",
 };
 
 /* ---------- clock + model status ---------- */
@@ -101,6 +114,7 @@ function switchView(view) {
   el.topbarTitle.textContent = VIEW_TITLES[view] || "";
 
   if (view === "cameras") renderCamerasTable();
+  if (view === "health") loadHealth();
 
   // The live MJPEG connection stays open as long as the <img> has a src,
   // even while its view is hidden — stop it when navigating away, and
@@ -122,11 +136,19 @@ async function loadCameras() {
   cameras = await res.json();
   renderDashboard();
   renderChatStrip();
+  renderRailBadge();
   if (currentView === "cameras") renderCamerasTable();
 
   if (!activeCameraId && cameras.length) {
     selectCamera(cameras[0].id);
   }
+}
+
+function renderRailBadge() {
+  const online = cameras.filter((c) => c.online).length;
+  el.railCamerasBadge.hidden = cameras.length === 0;
+  el.railCamerasBadge.textContent = `${online}/${cameras.length}`;
+  el.railCamerasBadge.classList.toggle("warn", online < cameras.length);
 }
 
 function refreshThumbnails() {
@@ -229,6 +251,26 @@ async function loadPrompts() {
   }
 }
 
+async function loadChatHistory() {
+  try {
+    const res = await fetch(`${API}/api/chat/history`);
+    if (!res.ok) return;
+    const rows = await res.json();
+    chatLog.length = 0;
+    for (const row of rows) {
+      chatLog.push({
+        role: row.role === "assistant" ? "ai" : "user",
+        text: row.text,
+        camerasUsed: row.cameras_used,
+        snapshot: row.snapshot,
+      });
+    }
+    renderChat();
+  } catch (e) {
+    // A missing transcript shouldn't block using the app.
+  }
+}
+
 function renderChat() {
   el.chatLog.innerHTML = "";
   if (chatLog.length === 0) {
@@ -236,7 +278,7 @@ function renderChat() {
     return;
   }
   for (const msg of chatLog) {
-    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed);
+    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot);
   }
   el.chatLog.scrollTop = el.chatLog.scrollHeight;
 }
@@ -250,16 +292,52 @@ function camerasUsedLabel(camIds) {
   return names.length === 1 ? `📷 ${names[0]}` : `📷 ${names.join(", ")}`;
 }
 
-function appendMessageEl(role, text, thinking, camerasUsed) {
+function appendMessageEl(role, text, thinking, camerasUsed, snapshot) {
   const bubble = document.createElement("div");
   bubble.className = `msg msg-${role}` + (thinking ? " thinking" : "");
-  bubble.textContent = text;
+
+  const body = document.createElement("div");
+  body.textContent = text;
+  bubble.appendChild(body);
+
+  // Show the frame the answer was actually based on, so the claim is
+  // checkable rather than something the user has to take on faith.
+  if (snapshot) {
+    const img = document.createElement("img");
+    img.className = "msg-snapshot";
+    img.src = snapshot;
+    img.alt = "Frame analyzed";
+    bubble.appendChild(img);
+  }
 
   const label = camerasUsedLabel(camerasUsed);
-  if (label) {
+  if (label || (role === "ai" && !thinking)) {
     const meta = document.createElement("div");
     meta.className = "msg-meta";
-    meta.textContent = label;
+
+    if (label) {
+      const span = document.createElement("span");
+      span.textContent = label;
+      meta.appendChild(span);
+    }
+
+    if (role === "ai" && !thinking) {
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "msg-copy";
+      copyBtn.textContent = "Copy";
+      copyBtn.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          copyBtn.textContent = "Copied";
+          setTimeout(() => (copyBtn.textContent = "Copy"), 1500);
+        } catch (e) {
+          copyBtn.textContent = "Failed";
+          setTimeout(() => (copyBtn.textContent = "Copy"), 1500);
+        }
+      };
+      meta.appendChild(copyBtn);
+    }
+
     bubble.appendChild(meta);
   }
 
@@ -267,6 +345,17 @@ function appendMessageEl(role, text, thinking, camerasUsed) {
   el.chatLog.scrollTop = el.chatLog.scrollHeight;
   return bubble;
 }
+
+el.btnClearChat.addEventListener("click", async () => {
+  if (chatLog.length && !confirm("Clear the whole conversation?")) return;
+  try {
+    await fetch(`${API}/api/chat/history`, { method: "DELETE" });
+  } catch (e) {
+    // Clearing the view is still the right outcome if the call fails.
+  }
+  chatLog.length = 0;
+  renderChat();
+});
 
 el.chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -292,7 +381,12 @@ el.chatForm.addEventListener("submit", async (e) => {
     if (!res.ok) {
       chatLog.push({ role: "ai", text: data.detail || "Something went wrong." });
     } else {
-      chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used });
+      chatLog.push({
+        role: "ai",
+        text: data.answer,
+        camerasUsed: data.cameras_used,
+        snapshot: data.snapshot,
+      });
     }
   } catch (err) {
     thinkingBubble.remove();
@@ -325,6 +419,7 @@ function renderCamerasTable() {
       </div>
       <div class="cam-row-actions">
         <button class="btn-icon" data-action="view">View</button>
+        <button class="btn-icon" data-action="edit">Edit</button>
         <button class="btn-icon danger" data-action="delete">Delete</button>
       </div>
     `;
@@ -332,6 +427,7 @@ function renderCamerasTable() {
       switchView("chat");
       selectCamera(cam.id);
     };
+    row.querySelector('[data-action="edit"]').onclick = () => openEditModal(cam);
     row.querySelector('[data-action="delete"]').onclick = () => deleteCamera(cam.id, cam.name);
     el.camerasTable.appendChild(row);
   }
@@ -407,6 +503,144 @@ el.cameraForm.addEventListener("submit", async (e) => {
   }
 });
 
+/* ---------- edit camera ---------- */
+
+let editingCameraId = null;
+
+function openEditModal(cam) {
+  editingCameraId = cam.id;
+  const f = el.editCameraForm;
+  f.elements.name.value = cam.name || "";
+  f.elements.location.value = cam.location || "";
+  f.elements.zone_tags.value = (cam.zone_tags || []).join(", ");
+  f.elements.description.value = cam.description || "";
+  el.editCameraFormError.hidden = true;
+  el.editModalOverlay.hidden = false;
+}
+
+function closeEditModal() {
+  el.editModalOverlay.hidden = true;
+  editingCameraId = null;
+}
+
+el.editModalClose.addEventListener("click", closeEditModal);
+el.btnCancelEditCamera.addEventListener("click", closeEditModal);
+el.editModalOverlay.addEventListener("click", (e) => {
+  if (e.target === el.editModalOverlay) closeEditModal();
+});
+
+el.editCameraForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!editingCameraId) return;
+
+  el.editCameraFormError.hidden = true;
+  el.btnSubmitEditCamera.disabled = true;
+  el.btnSubmitEditCamera.textContent = "Saving…";
+
+  const f = el.editCameraForm;
+  const payload = {
+    name: f.elements.name.value.trim(),
+    location: f.elements.location.value.trim(),
+    zone_tags: f.elements.zone_tags.value
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean),
+    description: f.elements.description.value.trim(),
+  };
+
+  try {
+    const res = await fetch(`${API}/api/cameras/${editingCameraId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Failed to save changes.");
+    closeEditModal();
+    await loadCameras();
+  } catch (err) {
+    el.editCameraFormError.textContent = err.message;
+    el.editCameraFormError.hidden = false;
+  } finally {
+    el.btnSubmitEditCamera.disabled = false;
+    el.btnSubmitEditCamera.textContent = "Save changes";
+  }
+});
+
+/* ---------- health ---------- */
+
+async function loadHealth() {
+  el.healthPage.innerHTML = `<div class="empty-state">Loading…</div>`;
+  try {
+    const res = await fetch(`${API}/api/health`);
+    const data = await res.json();
+    renderHealth(data);
+  } catch (err) {
+    el.healthPage.innerHTML = `<div class="empty-state">Could not reach the server.</div>`;
+  }
+}
+
+function renderHealth(data) {
+  const gpu = data.gpu || {};
+  const gpuPct = gpu.available && gpu.total_mb
+    ? Math.round((gpu.used_mb / gpu.total_mb) * 100)
+    : 0;
+
+  const modelState = data.model.ready
+    ? `<span class="health-ok">Ready</span>`
+    : data.model.error
+    ? `<span class="health-bad">Error</span>`
+    : `<span class="health-warn">Loading…</span>`;
+
+  el.healthPage.innerHTML = `
+    <div class="health-grid">
+      <div class="health-card">
+        <div class="health-card-title">Model</div>
+        <div class="health-row"><span>Status</span><span>${modelState}</span></div>
+        <div class="health-row"><span>Model</span><span class="health-mono">${escapeHtml(data.model.id)}</span></div>
+        ${
+          data.model.error
+            ? `<div class="health-error">${escapeHtml(data.model.error)}</div>`
+            : ""
+        }
+      </div>
+
+      <div class="health-card">
+        <div class="health-card-title">GPU</div>
+        ${
+          gpu.available
+            ? `
+          <div class="health-row"><span>Device</span><span class="health-mono">${escapeHtml(gpu.name)}</span></div>
+          <div class="health-row"><span>Memory</span><span class="health-mono">${gpu.used_mb} / ${gpu.total_mb} MB</span></div>
+          <div class="health-bar"><div class="health-bar-fill" style="width:${gpuPct}%"></div></div>
+        `
+            : `<div class="health-muted">No CUDA device detected.</div>`
+        }
+      </div>
+
+      <div class="health-card health-card-wide">
+        <div class="health-card-title">Cameras</div>
+        ${
+          (data.cameras || []).length === 0
+            ? `<div class="health-muted">No cameras configured.</div>`
+            : data.cameras
+                .map(
+                  (c) => `
+          <div class="health-row">
+            <span>${escapeHtml(c.name)}</span>
+            <span>
+              <span class="health-mono">${c.fps.toFixed(1)} fps</span>
+              ${c.online ? `<span class="health-ok">online</span>` : `<span class="health-bad">offline</span>`}
+            </span>
+          </div>`
+                )
+                .join("")
+        }
+      </div>
+    </div>
+  `;
+}
+
 /* ---------- utils ---------- */
 
 function escapeHtml(str) {
@@ -420,3 +654,4 @@ function escapeHtml(str) {
 loadCameras();
 loadPrompts();
 renderChat();
+loadChatHistory();

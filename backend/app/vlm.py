@@ -3,9 +3,9 @@ import logging
 
 from PIL import Image
 
-ImageOrList = Image.Image | list[Image.Image]
+from .config import MODEL_ID, PREWARM_MODEL
 
-from .config import MODEL_ID
+ImageOrList = Image.Image | list[Image.Image]
 
 log = logging.getLogger("qwenvl.vlm")
 
@@ -40,6 +40,22 @@ class VisionLanguageModel:
         except Exception as exc:  # noqa: BLE001
             self._load_error = str(exc)
             log.exception("Failed to load model")
+            return
+
+        if PREWARM_MODEL:
+            self._prewarm()
+
+    def _prewarm(self):
+        """One tiny inference so CUDA kernels/allocator are warm before the
+        first real question — otherwise that question eats the setup cost."""
+        try:
+            log.info("Pre-warming model ...")
+            blank = Image.new("RGB", (64, 64), (16, 16, 16))
+            self.ask(blank, "Reply with the single word: ready.", max_new_tokens=8)
+            log.info("Pre-warm complete.")
+        except Exception:  # noqa: BLE001
+            # Never let a pre-warm failure take down a model that loaded fine.
+            log.exception("Pre-warm failed (continuing anyway)")
 
     @property
     def ready(self) -> bool:
@@ -49,13 +65,31 @@ class VisionLanguageModel:
     def error(self):
         return self._load_error
 
-    def ask(self, image: ImageOrList, question: str, max_new_tokens: int = 512) -> str:
+    def ask(
+        self,
+        image: ImageOrList,
+        question: str,
+        max_new_tokens: int = 512,
+        history: list[dict] | None = None,
+    ) -> str:
+        """`history` is prior turns as [{"role": "user"|"assistant", "text": ...}].
+        Only the current turn carries images — replaying old frames would grow
+        VRAM use with every message for little benefit."""
         if not self._loaded:
             raise RuntimeError(self._load_error or "Model is not loaded yet")
 
         images = image if isinstance(image, list) else [image]
 
-        messages = [
+        messages = []
+        for turn in history or []:
+            role = turn.get("role")
+            text = (turn.get("text") or "").strip()
+            if role in ("user", "assistant") and text:
+                messages.append(
+                    {"role": role, "content": [{"type": "text", "text": text}]}
+                )
+
+        messages.append(
             {
                 "role": "user",
                 "content": (
@@ -63,7 +97,7 @@ class VisionLanguageModel:
                     + [{"type": "text", "text": question}]
                 ),
             }
-        ]
+        )
 
         with self._lock:
             text = self._processor.apply_chat_template(

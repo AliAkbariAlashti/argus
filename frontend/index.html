@@ -33,6 +33,11 @@
       <button class="rail-btn" data-view="cameras" title="Cameras">
         <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
         <span>Cameras</span>
+        <span class="rail-badge" id="rail-cameras-badge" hidden></span>
+      </button>
+      <button class="rail-btn" data-view="health" title="System health">
+        <svg viewBox="0 0 24 24"><path d="M3 11h3.4l1.8-5.2a1 1 0 011.9.05l3 9.3 1.6-4.5a1 1 0 01.95-.65H21v2h-4.6l-2.5 6.9a1 1 0 01-1.9-.05l-3-9.2-1.5 4.4a1 1 0 01-.95.65H3v-2z"/></svg>
+        <span>Health</span>
       </button>
       <div class="rail-spacer"></div>
       <div class="rail-status" id="rail-status" title="Model status">
@@ -81,8 +86,11 @@
 
           <div class="chat">
             <div class="chat-header">
-              <span>AI Analyst</span>
-              <span class="chat-sub">Ask about any camera, or all of them at once</span>
+              <div>
+                <span>AI Analyst</span>
+                <span class="chat-sub">Ask about any camera, or all of them at once</span>
+              </div>
+              <button class="btn-icon" id="btn-clear-chat" title="Clear conversation">Clear</button>
             </div>
 
             <div id="chat-log" class="chat-log">
@@ -137,6 +145,11 @@
           </div>
         </div>
       </section>
+
+      <!-- ============ HEALTH ============ -->
+      <section class="view" id="view-health" hidden>
+        <div class="health-page" id="health-page"></div>
+      </section>
     </div>
   </div>
 
@@ -187,6 +200,41 @@
         <div class="modal-actions">
           <button type="button" class="btn-ghost" id="btn-cancel-camera">Cancel</button>
           <button type="submit" class="btn-primary" id="btn-submit-camera">Add Camera</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ EDIT CAMERA MODAL ============ -->
+  <div class="modal-overlay" id="edit-modal-overlay" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <span>Edit Camera</span>
+        <button class="modal-close" id="edit-modal-close">&times;</button>
+      </div>
+      <form id="edit-camera-form" class="modal-body">
+        <label class="field">
+          <span>Name</span>
+          <input name="name" required />
+        </label>
+        <label class="field">
+          <span>Location</span>
+          <input name="location" />
+        </label>
+        <label class="field">
+          <span>Zone tags <em>(comma-separated, helps the AI find this camera)</em></span>
+          <input name="zone_tags" />
+        </label>
+        <label class="field">
+          <span>Description</span>
+          <textarea name="description" rows="3"></textarea>
+        </label>
+
+        <div class="modal-error" id="edit-camera-form-error" hidden></div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" id="btn-cancel-edit-camera">Cancel</button>
+          <button type="submit" class="btn-primary" id="btn-submit-edit-camera">Save changes</button>
         </div>
       </form>
     </div>

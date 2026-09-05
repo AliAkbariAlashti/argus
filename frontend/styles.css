@@ -487,6 +487,10 @@ body {
   padding: 14px 18px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .chat-header span:first-child {
@@ -553,6 +557,168 @@ body {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.msg-snapshot {
+  display: block;
+  margin-top: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+  max-width: 100%;
+}
+
+.msg-copy {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font);
+  flex-shrink: 0;
+}
+
+.msg-copy:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ---------- rail badge ---------- */
+
+.rail-badge {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 8.5px;
+  font-weight: 700;
+  background: var(--border);
+  color: var(--text-dim);
+  padding: 1px 5px;
+  border-radius: 999px;
+}
+
+.rail-badge.warn {
+  background: var(--amber);
+  color: #1a1200;
+}
+
+/* ---------- health ---------- */
+
+.health-page {
+  padding: 20px;
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.health-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.health-card-wide {
+  grid-column: 1 / -1;
+}
+
+.health-card-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 10px;
+}
+
+.health-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.health-row:last-child {
+  border-bottom: none;
+}
+
+.health-row > span:first-child {
+  color: var(--text-dim);
+}
+
+.health-row > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.health-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.health-ok {
+  color: var(--green);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.health-warn {
+  color: var(--amber);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.health-bad {
+  color: var(--red);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.health-muted {
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+.health-error {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--red);
+  background: rgba(255, 84, 112, 0.08);
+  border: 1px solid rgba(255, 84, 112, 0.3);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-word;
+}
+
+.health-bar {
+  margin-top: 10px;
+  height: 6px;
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.health-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #7c5cff);
+  border-radius: 999px;
 }
 
 .prompt-chips {

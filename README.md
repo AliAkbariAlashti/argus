@@ -73,3 +73,7 @@ Environment variables (all optional, see [backend/app/config.py](backend/app/con
 - `VIDEOS_DIR` — path to video files (default: `<repo>/videos`)
 - `QWENVL_MODEL_ID` — HF model id (default: `Qwen/Qwen2.5-VL-7B-Instruct`)
 - `PORT` — server port (default: `8000`)
+- `CHAT_FRAMES_SINGLE_CAMERA` — frames sent per single-camera question (default `3`; more frames = better motion understanding, more VRAM)
+- `VLM_MAX_IMAGE_EDGE` — longest edge in px of frames sent to the model (default `896`)
+- `CHAT_HISTORY_TURNS` — prior turns replayed as context (default `6`)
+- `PREWARM_MODEL` — run a throwaway inference at startup so the first question is fast (default on; set `0` to disable)

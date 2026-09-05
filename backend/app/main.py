@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import io
 import logging
 import shutil
 import threading
@@ -17,7 +19,15 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .camera import registry
-from .config import SEED_CAMERAS, SUGGESTED_PROMPTS, VIDEOS_DIR
+from .config import (
+    CHAT_FRAMES_SINGLE_CAMERA,
+    CHAT_HISTORY_TURNS,
+    MODEL_ID,
+    SEED_CAMERAS,
+    SUGGESTED_PROMPTS,
+    VIDEOS_DIR,
+    VLM_MAX_IMAGE_EDGE,
+)
 from .db import Base, engine, get_db
 from .grounding import (
     best_matching_camera,
@@ -27,7 +37,7 @@ from .grounding import (
     is_metadata_question,
     metadata_answer,
 )
-from .models import Camera
+from .models import Camera, ChatMessage
 from .vlm import vlm
 
 logging.basicConfig(level=logging.INFO)
@@ -92,6 +102,49 @@ async def status():
 @app.get("/api/prompts")
 async def suggested_prompts():
     return SUGGESTED_PROMPTS
+
+
+@app.get("/api/health")
+def health(db: Session = Depends(get_db)):
+    """Operational snapshot: model state, GPU memory, per-camera decode rate."""
+    gpu = {"available": False}
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            free_b, total_b = torch.cuda.mem_get_info()
+            gpu = {
+                "available": True,
+                "name": torch.cuda.get_device_name(0),
+                "total_mb": round(total_b / 1024 / 1024),
+                "used_mb": round((total_b - free_b) / 1024 / 1024),
+                "free_mb": round(free_b / 1024 / 1024),
+            }
+    except Exception:  # noqa: BLE001
+        # torch missing or CUDA unavailable — report "no GPU", not an error.
+        log.debug("GPU stats unavailable", exc_info=True)
+
+    cameras = []
+    for cam in db.query(Camera).order_by(Camera.created_at).all():
+        feed = registry.get(cam.id)
+        cameras.append(
+            {
+                "id": cam.id,
+                "name": cam.name,
+                "online": registry.is_online(cam.id),
+                "fps": feed.get_fps() if feed else 0.0,
+            }
+        )
+
+    return {
+        "model": {
+            "id": MODEL_ID,
+            "ready": vlm.ready,
+            "error": vlm.error,
+        },
+        "gpu": gpu,
+        "cameras": cameras,
+    }
 
 
 # ---------- Camera CRUD ----------
@@ -268,13 +321,72 @@ async def camera_snapshot(cam_id: str):
 #      the intuitive thing.
 
 
+def _to_pil(frame):
+    """BGR numpy frame -> RGB PIL image, downscaled to the VRAM budget."""
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    img = Image.fromarray(rgb)
+    longest = max(img.width, img.height)
+    if longest > VLM_MAX_IMAGE_EDGE:
+        scale = VLM_MAX_IMAGE_EDGE / longest
+        img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
+    return img
+
+
 def _frame_to_image(cam_id: str):
     feed = registry.get(cam_id)
     frame = feed.get_frame() if feed else None
     if frame is None:
         return None
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(rgb)
+    return _to_pil(frame)
+
+
+def _frame_sequence_to_images(cam_id: str, count: int):
+    """Recent frames for one camera, so the model can see movement."""
+    feed = registry.get(cam_id)
+    if feed is None:
+        return []
+    return [_to_pil(f) for f in feed.get_frame_sequence(count)]
+
+
+def _image_to_data_uri(img: Image.Image, max_width: int = 320) -> Optional[str]:
+    """Small JPEG data URI of the frame an answer was based on, so the UI can
+    show what the model actually saw. Downscaled — it's a thumbnail, and it
+    gets stored on every message."""
+    try:
+        thumb = img.copy()
+        if thumb.width > max_width:
+            ratio = max_width / thumb.width
+            thumb = thumb.resize((max_width, max(1, int(thumb.height * ratio))))
+        buf = io.BytesIO()
+        thumb.save(buf, format="JPEG", quality=70)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # noqa: BLE001
+        log.exception("Failed to build snapshot thumbnail")
+        return None
+
+
+def _recent_history(db: Session) -> list[dict]:
+    """Prior turns, oldest first, for replay as model context."""
+    rows = (
+        db.query(ChatMessage)
+        .order_by(ChatMessage.id.desc())
+        .limit(CHAT_HISTORY_TURNS)
+        .all()
+    )
+    return [{"role": r.role, "text": r.text} for r in reversed(rows)]
+
+
+def _save_turn(db: Session, role: str, text: str, cameras_used=None, snapshot=None):
+    msg = ChatMessage(
+        role=role,
+        text=text,
+        cameras_used=cameras_used or [],
+        snapshot=snapshot,
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+    return msg
 
 
 class ChatRequest(BaseModel):
@@ -282,17 +394,33 @@ class ChatRequest(BaseModel):
     focused_camera_id: Optional[str] = None
 
 
+@app.get("/api/chat/history")
+def chat_history(db: Session = Depends(get_db)):
+    rows = db.query(ChatMessage).order_by(ChatMessage.id).all()
+    return [r.to_dict() for r in rows]
+
+
+@app.delete("/api/chat/history")
+def clear_chat_history(db: Session = Depends(get_db)):
+    deleted = db.query(ChatMessage).delete()
+    db.commit()
+    return {"deleted": deleted}
+
+
 @app.post("/api/chat")
 def chat(req: ChatRequest, db: Session = Depends(get_db)):
     all_cameras = db.query(Camera).order_by(Camera.created_at).all()
 
+    history = _recent_history(db)
+    _save_turn(db, "user", req.question)
+
+    # 1. Fleet metadata — answerable from the database alone.
     if is_metadata_question(req.question):
         camera_dicts = [_camera_out(c) for c in all_cameras]
-        return {
-            "question": req.question,
-            "answer": metadata_answer(req.question, camera_dicts),
-            "cameras_used": [c["id"] for c in camera_dicts],
-        }
+        answer = metadata_answer(req.question, camera_dicts)
+        used = [c["id"] for c in camera_dicts]
+        _save_turn(db, "assistant", answer, cameras_used=used)
+        return {"question": req.question, "answer": answer, "cameras_used": used}
 
     if not vlm.ready:
         raise HTTPException(
@@ -300,11 +428,11 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
             detail=vlm.error or "Model is still loading, please wait a moment.",
         )
 
+    # 2. Fleet vision — one current frame from every online camera.
     if is_fleet_vision_question(req.question):
-        online_cameras = [c for c in all_cameras if registry.is_online(c.id)]
         images = []
         used_cameras = []
-        for cam in online_cameras:
+        for cam in all_cameras:
             img = _frame_to_image(cam.id)
             if img is not None:
                 images.append(img)
@@ -315,17 +443,23 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
 
         prompt = build_fleet_prompt(used_cameras, req.question)
         try:
-            answer = vlm.ask(images, prompt)
+            answer = vlm.ask(images, prompt, history=history)
         except Exception as exc:  # noqa: BLE001
             log.exception("Fleet inference failed")
             raise HTTPException(status_code=500, detail=str(exc))
 
+        used = [c.id for c in used_cameras]
+        snapshot = _image_to_data_uri(images[0])
+        _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
         return {
             "question": req.question,
             "answer": answer,
-            "cameras_used": [c.id for c in used_cameras],
+            "cameras_used": used,
+            "snapshot": snapshot,
         }
 
+    # 3. A specific camera, named or matched by zone/tag.
+    # 4. Otherwise fall back to whatever the user has focused in the UI.
     camera = best_matching_camera(req.question, all_cameras)
     if camera is None and req.focused_camera_id:
         camera = next((c for c in all_cameras if c.id == req.focused_camera_id), None)
@@ -338,19 +472,26 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
             detail="Couldn't tell which camera you mean — try naming it, or select one first.",
         )
 
-    image = _frame_to_image(camera.id)
-    if image is None:
+    images = _frame_sequence_to_images(camera.id, CHAT_FRAMES_SINGLE_CAMERA)
+    if not images:
         raise HTTPException(status_code=503, detail=f"Camera '{camera.name}' has no frame yet.")
 
-    grounded_question = build_grounded_prompt(camera, req.question)
+    grounded_question = build_grounded_prompt(camera, req.question, frame_count=len(images))
 
     try:
-        answer = vlm.ask(image, grounded_question)
+        answer = vlm.ask(images, grounded_question, history=history)
     except Exception as exc:  # noqa: BLE001
         log.exception("Inference failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    return {"question": req.question, "answer": answer, "cameras_used": [camera.id]}
+    snapshot = _image_to_data_uri(images[-1])
+    _save_turn(db, "assistant", answer, cameras_used=[camera.id], snapshot=snapshot)
+    return {
+        "question": req.question,
+        "answer": answer,
+        "cameras_used": [camera.id],
+        "snapshot": snapshot,
+    }
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
