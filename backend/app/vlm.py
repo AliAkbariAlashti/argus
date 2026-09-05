@@ -3,6 +3,8 @@ import logging
 
 from PIL import Image
 
+ImageOrList = Image.Image | list[Image.Image]
+
 from .config import MODEL_ID
 
 log = logging.getLogger("qwenvl.vlm")
@@ -47,17 +49,19 @@ class VisionLanguageModel:
     def error(self):
         return self._load_error
 
-    def ask(self, image: Image.Image, question: str, max_new_tokens: int = 512) -> str:
+    def ask(self, image: ImageOrList, question: str, max_new_tokens: int = 512) -> str:
         if not self._loaded:
             raise RuntimeError(self._load_error or "Model is not loaded yet")
+
+        images = image if isinstance(image, list) else [image]
 
         messages = [
             {
                 "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": question},
-                ],
+                "content": (
+                    [{"type": "image", "image": img} for img in images]
+                    + [{"type": "text", "text": question}]
+                ),
             }
         ]
 
@@ -67,7 +71,7 @@ class VisionLanguageModel:
             )
             inputs = self._processor(
                 text=[text],
-                images=[image],
+                images=images,
                 padding=True,
                 return_tensors="pt",
             )

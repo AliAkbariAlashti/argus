@@ -3,7 +3,10 @@ const API = "";
 let cameras = [];
 let activeCameraId = null;
 let currentView = "dashboard";
-const chatHistory = {}; // camera_id -> [{role, text}]
+// One global conversation covering every camera, not one per camera —
+// switching the focused camera only changes the live view, never wipes
+// context. Each entry: {role, text, thinking?, camerasUsed?}
+const chatLog = [];
 
 const el = {
   clock: document.getElementById("clock"),
@@ -194,6 +197,9 @@ function renderChatStrip() {
 }
 
 function selectCamera(camId) {
+  // Only changes which feed is focused in the viewer — the chat below it
+  // is one continuous conversation across every camera, so this never
+  // touches chatLog.
   activeCameraId = camId;
   const cam = cameras.find((c) => c.id === camId);
   if (!cam) return;
@@ -205,7 +211,6 @@ function selectCamera(camId) {
   el.viewerPlaceholder.style.display = "none";
 
   renderChatStrip();
-  renderChat();
 }
 
 async function loadPrompts() {
@@ -225,22 +230,39 @@ async function loadPrompts() {
 }
 
 function renderChat() {
-  const history = chatHistory[activeCameraId] || [];
   el.chatLog.innerHTML = "";
-  if (history.length === 0) {
-    el.chatLog.innerHTML = `<div class="chat-empty">No conversation yet for this camera. Try one of the prompts below, or ask your own question.</div>`;
+  if (chatLog.length === 0) {
+    el.chatLog.innerHTML = `<div class="chat-empty">No conversation yet. Ask about a specific camera, or something across all of them — try one of the prompts below.</div>`;
     return;
   }
-  for (const msg of history) {
-    appendMessageEl(msg.role, msg.text, msg.thinking);
+  for (const msg of chatLog) {
+    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed);
   }
   el.chatLog.scrollTop = el.chatLog.scrollHeight;
 }
 
-function appendMessageEl(role, text, thinking) {
+function camerasUsedLabel(camIds) {
+  if (!camIds || camIds.length === 0) return null;
+  const names = camIds
+    .map((id) => cameras.find((c) => c.id === id)?.name)
+    .filter(Boolean);
+  if (names.length === 0) return null;
+  return names.length === 1 ? `📷 ${names[0]}` : `📷 ${names.join(", ")}`;
+}
+
+function appendMessageEl(role, text, thinking, camerasUsed) {
   const bubble = document.createElement("div");
   bubble.className = `msg msg-${role}` + (thinking ? " thinking" : "");
   bubble.textContent = text;
+
+  const label = camerasUsedLabel(camerasUsed);
+  if (label) {
+    const meta = document.createElement("div");
+    meta.className = "msg-meta";
+    meta.textContent = label;
+    bubble.appendChild(meta);
+  }
+
   el.chatLog.appendChild(bubble);
   el.chatLog.scrollTop = el.chatLog.scrollHeight;
   return bubble;
@@ -249,33 +271,32 @@ function appendMessageEl(role, text, thinking) {
 el.chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const question = el.chatInput.value.trim();
-  if (!question || !activeCameraId) return;
+  if (!question) return;
 
-  if (!chatHistory[activeCameraId]) chatHistory[activeCameraId] = [];
-  chatHistory[activeCameraId].push({ role: "user", text: question });
+  chatLog.push({ role: "user", text: question });
   renderChat();
   el.chatInput.value = "";
   el.chatSend.disabled = true;
 
-  const thinkingBubble = appendMessageEl("ai", "Analyzing current frame…", true);
+  const thinkingBubble = appendMessageEl("ai", "Analyzing…", true);
 
   try {
     const res = await fetch(`${API}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ camera_id: activeCameraId, question }),
+      body: JSON.stringify({ question, focused_camera_id: activeCameraId }),
     });
     const data = await res.json();
     thinkingBubble.remove();
 
     if (!res.ok) {
-      chatHistory[activeCameraId].push({ role: "ai", text: data.detail || "Something went wrong." });
+      chatLog.push({ role: "ai", text: data.detail || "Something went wrong." });
     } else {
-      chatHistory[activeCameraId].push({ role: "ai", text: data.answer });
+      chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used });
     }
   } catch (err) {
     thinkingBubble.remove();
-    chatHistory[activeCameraId].push({ role: "ai", text: "Could not reach the analysis server." });
+    chatLog.push({ role: "ai", text: "Could not reach the analysis server." });
   }
 
   renderChat();
@@ -398,3 +419,4 @@ function escapeHtml(str) {
 
 loadCameras();
 loadPrompts();
+renderChat();

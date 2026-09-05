@@ -19,7 +19,14 @@ from sqlalchemy.orm import Session
 from .camera import registry
 from .config import SEED_CAMERAS, SUGGESTED_PROMPTS, VIDEOS_DIR
 from .db import Base, engine, get_db
-from .grounding import build_grounded_prompt
+from .grounding import (
+    best_matching_camera,
+    build_fleet_prompt,
+    build_grounded_prompt,
+    is_fleet_vision_question,
+    is_metadata_question,
+    metadata_answer,
+)
 from .models import Camera
 from .vlm import vlm
 
@@ -247,32 +254,93 @@ async def camera_snapshot(cam_id: str):
 
 
 # ---------- Chat ----------
+#
+# One global chat, not one per camera: every question is answered with
+# whatever context it actually needs, decided per-message —
+#   1. fleet metadata questions ("how many cameras") -> answered directly
+#      from the DB, no VLM call, so the answer is always correct.
+#   2. fleet vision questions ("is anyone in the building") -> every
+#      camera's current frame is sent to the VLM in one call, each frame
+#      labeled by camera name.
+#   3. a specific camera mentioned by name/zone/tag -> that camera's frame.
+#   4. otherwise -> falls back to whichever camera the user currently has
+#      focused in the UI (if any), so the per-camera prompt chips still do
+#      the intuitive thing.
+
+
+def _frame_to_image(cam_id: str):
+    feed = registry.get(cam_id)
+    frame = feed.get_frame() if feed else None
+    if frame is None:
+        return None
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(rgb)
 
 
 class ChatRequest(BaseModel):
-    camera_id: str
     question: str
+    focused_camera_id: Optional[str] = None
 
 
 @app.post("/api/chat")
 def chat(req: ChatRequest, db: Session = Depends(get_db)):
+    all_cameras = db.query(Camera).order_by(Camera.created_at).all()
+
+    if is_metadata_question(req.question):
+        camera_dicts = [_camera_out(c) for c in all_cameras]
+        return {
+            "question": req.question,
+            "answer": metadata_answer(req.question, camera_dicts),
+            "cameras_used": [c["id"] for c in camera_dicts],
+        }
+
     if not vlm.ready:
         raise HTTPException(
             status_code=503,
             detail=vlm.error or "Model is still loading, please wait a moment.",
         )
 
-    camera = db.get(Camera, req.camera_id)
+    if is_fleet_vision_question(req.question):
+        online_cameras = [c for c in all_cameras if registry.is_online(c.id)]
+        images = []
+        used_cameras = []
+        for cam in online_cameras:
+            img = _frame_to_image(cam.id)
+            if img is not None:
+                images.append(img)
+                used_cameras.append(cam)
+
+        if not images:
+            raise HTTPException(status_code=503, detail="No cameras have a frame yet.")
+
+        prompt = build_fleet_prompt(used_cameras, req.question)
+        try:
+            answer = vlm.ask(images, prompt)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Fleet inference failed")
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        return {
+            "question": req.question,
+            "answer": answer,
+            "cameras_used": [c.id for c in used_cameras],
+        }
+
+    camera = best_matching_camera(req.question, all_cameras)
+    if camera is None and req.focused_camera_id:
+        camera = next((c for c in all_cameras if c.id == req.focused_camera_id), None)
+    if camera is None and len(all_cameras) == 1:
+        camera = all_cameras[0]
+
     if camera is None:
-        raise HTTPException(status_code=404, detail="Camera not found")
+        raise HTTPException(
+            status_code=400,
+            detail="Couldn't tell which camera you mean — try naming it, or select one first.",
+        )
 
-    feed = registry.get(req.camera_id)
-    frame = feed.get_frame() if feed else None
-    if frame is None:
-        raise HTTPException(status_code=503, detail="Camera has no frame yet")
-
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    image = Image.fromarray(rgb)
+    image = _frame_to_image(camera.id)
+    if image is None:
+        raise HTTPException(status_code=503, detail=f"Camera '{camera.name}' has no frame yet.")
 
     grounded_question = build_grounded_prompt(camera, req.question)
 
@@ -282,7 +350,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
         log.exception("Inference failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    return {"camera_id": req.camera_id, "question": req.question, "answer": answer}
+    return {"question": req.question, "answer": answer, "cameras_used": [camera.id]}
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
