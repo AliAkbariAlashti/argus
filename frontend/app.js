@@ -98,6 +98,18 @@ function switchView(view) {
   el.topbarTitle.textContent = VIEW_TITLES[view] || "";
 
   if (view === "cameras") renderCamerasTable();
+
+  // The live MJPEG connection stays open as long as the <img> has a src,
+  // even while its view is hidden — stop it when navigating away, and
+  // resume it when coming back to Chat with a camera already selected.
+  if (view === "chat" && activeCameraId) {
+    if (!el.viewerStream.src) {
+      el.viewerStream.src = `${API}/api/cameras/${activeCameraId}/stream`;
+    }
+  } else {
+    el.viewerStream.removeAttribute("src");
+    el.viewerStream.classList.remove("visible");
+  }
 }
 
 /* ---------- data loading ---------- */
@@ -115,7 +127,13 @@ async function loadCameras() {
 }
 
 function refreshThumbnails() {
-  document.querySelectorAll("[data-thumb-for]").forEach((img) => {
+  // Hidden views stay in the DOM (just [hidden]), so scope this to the
+  // active view only — otherwise every camera's snapshot gets refetched
+  // redundantly for the dashboard grid, chat strip, and cameras table at
+  // once, multiplying request load for no visible benefit.
+  const activeViewEl = document.getElementById(`view-${currentView}`);
+  if (!activeViewEl) return;
+  activeViewEl.querySelectorAll("[data-thumb-for]").forEach((img) => {
     const camId = img.dataset.thumbFor;
     img.src = `${API}/api/cameras/${camId}/snapshot?t=${Date.now()}`;
   });
@@ -338,10 +356,16 @@ el.cameraForm.addEventListener("submit", async (e) => {
 
   const formData = new FormData(el.cameraForm);
 
+  // Video uploads can be several MB; give it real headroom but never hang
+  // the modal forever if the server or network stalls.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
   try {
     const res = await fetch(`${API}/api/cameras`, {
       method: "POST",
       body: formData,
+      signal: controller.signal,
     });
     const data = await res.json();
     if (!res.ok) {
@@ -350,9 +374,13 @@ el.cameraForm.addEventListener("submit", async (e) => {
     closeCameraModal();
     await loadCameras();
   } catch (err) {
-    el.cameraFormError.textContent = err.message;
+    el.cameraFormError.textContent =
+      err.name === "AbortError"
+        ? "The request timed out. Please try again."
+        : err.message;
     el.cameraFormError.hidden = false;
   } finally {
+    clearTimeout(timeoutId);
     el.btnSubmitCamera.disabled = false;
     el.btnSubmitCamera.textContent = "Add Camera";
   }

@@ -1,11 +1,12 @@
+import asyncio
 import logging
 import shutil
 import threading
-import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
+import anyio
 import cv2
 from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +36,18 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def _raise_threadpool_capacity():
+    # Sync (blocking) routes below — DB calls, cv2, model inference, file
+    # copies — run in Starlette's shared threadpool. The default cap is low
+    # enough that a handful of dashboard tiles polling snapshots/status can
+    # starve simple CRUD requests. This is a plain concurrency ceiling, not
+    # per-request timeout, so raise it well above what the UI can realistically
+    # open at once.
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    limiter.total_tokens = 200
+
+
 def _seed_and_start_cameras():
     Base.metadata.create_all(bind=engine)
     db = next(get_db())
@@ -62,7 +75,7 @@ def on_shutdown():
 
 
 @app.get("/api/status")
-def status():
+async def status():
     return {
         "model_ready": vlm.ready,
         "model_error": vlm.error,
@@ -70,7 +83,7 @@ def status():
 
 
 @app.get("/api/prompts")
-def suggested_prompts():
+async def suggested_prompts():
     return SUGGESTED_PROMPTS
 
 
@@ -191,7 +204,11 @@ def delete_camera(cam_id: str, db: Session = Depends(get_db)):
 # ---------- Streaming ----------
 
 
-def _mjpeg_generator(cam_id: str):
+async def _mjpeg_generator(cam_id: str):
+    # Async generator: sleeps here yield control back to the event loop
+    # instead of pinning a threadpool worker for the whole connection
+    # lifetime, which matters a lot for a stream that stays open for
+    # as long as a browser tab is on this camera.
     feed = registry.get(cam_id)
     if feed is None:
         return
@@ -205,11 +222,11 @@ def _mjpeg_generator(cam_id: str):
                 b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
                 + jpeg + b"\r\n"
             )
-        time.sleep(1 / 25)
+        await asyncio.sleep(1 / 25)
 
 
 @app.get("/api/cameras/{cam_id}/stream")
-def camera_stream(cam_id: str):
+async def camera_stream(cam_id: str):
     if registry.get(cam_id) is None:
         raise HTTPException(status_code=404, detail="Camera not found")
     return StreamingResponse(
@@ -219,7 +236,7 @@ def camera_stream(cam_id: str):
 
 
 @app.get("/api/cameras/{cam_id}/snapshot")
-def camera_snapshot(cam_id: str):
+async def camera_snapshot(cam_id: str):
     feed = registry.get(cam_id)
     if feed is None:
         raise HTTPException(status_code=404, detail="Camera not found")
