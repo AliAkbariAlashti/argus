@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: sentinelvision-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinelvision
+    ports:
+      - "5432:5432"
+    volumes:
+      - sentinelvision_db_data:/var/lib/postgresql/data
+
+volumes:
+  sentinelvision_db_data:

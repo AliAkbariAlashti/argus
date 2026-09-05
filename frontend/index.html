@@ -8,68 +8,187 @@
 </head>
 <body>
   <div class="app">
-    <header class="topbar">
-      <div class="brand">
+    <nav class="rail">
+      <div class="rail-brand" title="Sentinel Vision">
         <span class="brand-mark"></span>
-        <span class="brand-name">Sentinel<span class="brand-accent">Vision</span></span>
       </div>
-      <div class="topbar-status">
-        <span id="model-status" class="pill pill-loading">
-          <span class="dot"></span> Loading model…
-        </span>
-        <span class="clock" id="clock"></span>
+      <button class="rail-btn active" data-view="dashboard" title="Dashboard">
+        <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4V4zm9 0h7v4h-7V4zm0 7h7v9h-7v-9zM4 14h7v6H4v-6z"/></svg>
+        <span>Dashboard</span>
+      </button>
+      <button class="rail-btn" data-view="chat" title="Chat">
+        <svg viewBox="0 0 24 24"><path d="M4 4h16v12H7l-3 3V4z"/></svg>
+        <span>Chat</span>
+      </button>
+      <button class="rail-btn disabled" data-view="alerts" title="Alerts — coming soon">
+        <svg viewBox="0 0 24 24"><path d="M12 2a6 6 0 00-6 6v4l-2 4h16l-2-4V8a6 6 0 00-6-6zm0 18a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 20z"/></svg>
+        <span>Alerts</span>
+        <span class="soon">soon</span>
+      </button>
+      <button class="rail-btn disabled" data-view="archive" title="Archive — coming soon">
+        <svg viewBox="0 0 24 24"><path d="M3 4h18v4H3V4zm1 5h16v11H4V9zm4 3v2h8v-2H8z"/></svg>
+        <span>Archive</span>
+        <span class="soon">soon</span>
+      </button>
+      <button class="rail-btn" data-view="cameras" title="Cameras">
+        <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
+        <span>Cameras</span>
+      </button>
+      <div class="rail-spacer"></div>
+      <div class="rail-status" id="rail-status" title="Model status">
+        <span class="dot"></span>
       </div>
-    </header>
+    </nav>
 
-    <div class="body">
-      <aside class="sidebar">
-        <div class="sidebar-title">Cameras</div>
-        <div id="camera-list" class="camera-list"></div>
-      </aside>
+    <div class="main-col">
+      <header class="topbar">
+        <div class="topbar-title" id="topbar-title">Dashboard</div>
+        <div class="topbar-status">
+          <span id="model-status" class="pill pill-loading">
+            <span class="dot"></span> Loading model…
+          </span>
+          <span class="clock" id="clock"></span>
+        </div>
+      </header>
 
-      <main class="main">
-        <section class="viewer">
-          <div class="viewer-header">
-            <div>
-              <div class="viewer-title" id="viewer-title">Select a camera</div>
-              <div class="viewer-location" id="viewer-location">&nbsp;</div>
+      <!-- ============ DASHBOARD VIEW ============ -->
+      <section class="view" id="view-dashboard">
+        <div class="grid-wall" id="dashboard-grid"></div>
+      </section>
+
+      <!-- ============ CHAT VIEW ============ -->
+      <section class="view" id="view-chat" hidden>
+        <div class="chat-layout">
+          <div class="chat-strip-col">
+            <div class="chat-strip" id="chat-strip"></div>
+          </div>
+
+          <div class="viewer">
+            <div class="viewer-header">
+              <div>
+                <div class="viewer-title" id="viewer-title">Select a camera</div>
+                <div class="viewer-location" id="viewer-location">&nbsp;</div>
+              </div>
+              <div class="live-badge"><span class="dot dot-live"></span>LIVE</div>
             </div>
-            <div class="live-badge"><span class="dot dot-live"></span>LIVE</div>
-          </div>
-          <div class="viewer-frame">
-            <img id="viewer-stream" class="viewer-stream" alt="Camera stream" />
-            <div id="viewer-placeholder" class="viewer-placeholder">
-              Choose a camera from the left to begin monitoring
-            </div>
-          </div>
-        </section>
-
-        <section class="chat">
-          <div class="chat-header">
-            <span>AI Analyst</span>
-            <span class="chat-sub">Ask about what the selected camera can currently see</span>
-          </div>
-
-          <div id="chat-log" class="chat-log">
-            <div class="chat-empty" id="chat-empty">
-              No conversation yet. Try one of the prompts below, or ask your own question.
+            <div class="viewer-frame">
+              <img id="viewer-stream" class="viewer-stream" alt="Camera stream" />
+              <div id="viewer-placeholder" class="viewer-placeholder">
+                Choose a camera from the strip to begin monitoring
+              </div>
             </div>
           </div>
 
-          <div id="prompt-chips" class="prompt-chips"></div>
+          <div class="chat">
+            <div class="chat-header">
+              <span>AI Analyst</span>
+              <span class="chat-sub">Ask about what the selected camera can currently see</span>
+            </div>
 
-          <form id="chat-form" class="chat-form">
-            <input
-              id="chat-input"
-              class="chat-input"
-              type="text"
-              placeholder="Ask what's happening on this camera…"
-              autocomplete="off"
-            />
-            <button type="submit" class="chat-send" id="chat-send">Ask</button>
-          </form>
-        </section>
-      </main>
+            <div id="chat-log" class="chat-log">
+              <div class="chat-empty" id="chat-empty">
+                No conversation yet. Try one of the prompts below, or ask your own question.
+              </div>
+            </div>
+
+            <div id="prompt-chips" class="prompt-chips"></div>
+
+            <form id="chat-form" class="chat-form">
+              <input
+                id="chat-input"
+                class="chat-input"
+                type="text"
+                placeholder="Ask what's happening on this camera…"
+                autocomplete="off"
+              />
+              <button type="submit" class="chat-send" id="chat-send">Ask</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ALERTS (coming soon) ============ -->
+      <section class="view" id="view-alerts" hidden>
+        <div class="soon-panel">
+          <div class="soon-icon">⏱</div>
+          <div class="soon-title">Alerts — Coming soon</div>
+          <div class="soon-text">Automated background monitoring that flags unusual activity across all cameras in real time.</div>
+        </div>
+      </section>
+
+      <!-- ============ ARCHIVE (coming soon) ============ -->
+      <section class="view" id="view-archive" hidden>
+        <div class="soon-panel">
+          <div class="soon-icon">🗄</div>
+          <div class="soon-title">Archive — Coming soon</div>
+          <div class="soon-text">Searchable history of recorded footage and past AI analysis for every camera.</div>
+        </div>
+      </section>
+
+      <!-- ============ CAMERAS (CRUD) ============ -->
+      <section class="view" id="view-cameras" hidden>
+        <div class="cameras-page">
+          <div class="cameras-list-col">
+            <div class="cameras-list-header">
+              <span>All cameras</span>
+              <button class="btn-primary" id="btn-add-camera">+ Add Camera</button>
+            </div>
+            <div class="cameras-table" id="cameras-table"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============ ADD CAMERA MODAL ============ -->
+  <div class="modal-overlay" id="modal-overlay" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <span>Add Camera</span>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <form id="camera-form" class="modal-body">
+        <label class="field">
+          <span>Name</span>
+          <input name="name" required placeholder="e.g. Parking Lot North" />
+        </label>
+        <label class="field">
+          <span>Location</span>
+          <input name="location" placeholder="e.g. Building B - Exterior" />
+        </label>
+        <label class="field">
+          <span>Zone tags <em>(comma-separated, helps the AI find this camera)</em></span>
+          <input name="zone_tags" placeholder="e.g. parking-lot, exterior, entrance" />
+        </label>
+        <label class="field">
+          <span>Description</span>
+          <textarea name="description" rows="3" placeholder="Short note about what this camera covers"></textarea>
+        </label>
+
+        <div class="field-tabs">
+          <div class="field-tab active" data-source="file">Video file</div>
+          <div class="field-tab field-tab-disabled" data-source="rtsp">
+            IP Camera / RTSP <span class="soon">soon</span>
+          </div>
+        </div>
+
+        <label class="field" id="field-video">
+          <span>Video file</span>
+          <input type="file" name="video" accept="video/*" required />
+        </label>
+
+        <label class="field field-disabled" id="field-rtsp" hidden>
+          <span>RTSP URL <span class="soon">coming soon</span></span>
+          <input type="text" placeholder="rtsp://..." disabled />
+        </label>
+
+        <div class="modal-error" id="camera-form-error" hidden></div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" id="btn-cancel-camera">Cancel</button>
+          <button type="submit" class="btn-primary" id="btn-submit-camera">Add Camera</button>
+        </div>
+      </form>
     </div>
   </div>
 

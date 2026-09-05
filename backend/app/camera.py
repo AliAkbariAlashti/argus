@@ -4,7 +4,7 @@ import logging
 
 import cv2
 
-from .config import CAMERAS, VIDEOS_DIR, JPEG_QUALITY
+from .config import VIDEOS_DIR, JPEG_QUALITY
 
 log = logging.getLogger("qwenvl.camera")
 
@@ -14,17 +14,13 @@ class CameraFeed:
     simulating a live CCTV feed. Real RTSP/webcam sources can later replace
     the file path with a stream URL without changing any consumer code."""
 
-    def __init__(self, cam_id: str, name: str, location: str, path):
+    def __init__(self, cam_id: str, path: str):
         self.id = cam_id
-        self.name = name
-        self.location = location
-        self.path = str(path)
+        self.path = path
 
         self._lock = threading.Lock()
         self._frame = None  # latest raw BGR frame
         self._jpeg = None  # latest encoded JPEG bytes
-        self._frame_index = 0
-        self._fps = 25.0
         self._running = False
         self._thread = None
 
@@ -48,8 +44,8 @@ class CameraFeed:
             return
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        self._fps = fps if fps > 1 else 25.0
-        delay = 1.0 / self._fps
+        fps = fps if fps > 1 else 25.0
+        delay = 1.0 / fps
 
         while self._running:
             ok, frame = cap.read()
@@ -64,7 +60,6 @@ class CameraFeed:
                 self._frame = frame
                 if ok:
                     self._jpeg = buf.tobytes()
-                self._frame_index += 1
 
             time.sleep(delay)
 
@@ -81,27 +76,43 @@ class CameraFeed:
 
 
 class CameraRegistry:
+    """Holds the live CameraFeed threads, keyed by camera id. Cameras
+    themselves are persisted in Postgres (see models.Camera); this registry
+    is just the in-memory runtime side (decoded frames) and is kept in sync
+    with the DB by add()/remove() calls from the API layer."""
+
     def __init__(self):
-        self._cams: dict[str, CameraFeed] = {}
-        for cam in CAMERAS:
-            path = VIDEOS_DIR / cam["file"]
-            self._cams[cam["id"]] = CameraFeed(
-                cam["id"], cam["name"], cam["location"], path
-            )
+        self._feeds: dict[str, CameraFeed] = {}
+        self._lock = threading.Lock()
 
-    def start_all(self):
-        for cam in self._cams.values():
-            cam.start()
+    def add(self, cam_id: str, source_path: str):
+        with self._lock:
+            if cam_id in self._feeds:
+                return
+            path = str(VIDEOS_DIR / source_path)
+            feed = CameraFeed(cam_id, path)
+            feed.start()
+            self._feeds[cam_id] = feed
 
-    def stop_all(self):
-        for cam in self._cams.values():
-            cam.stop()
+    def remove(self, cam_id: str):
+        with self._lock:
+            feed = self._feeds.pop(cam_id, None)
+        if feed:
+            feed.stop()
 
     def get(self, cam_id: str) -> CameraFeed | None:
-        return self._cams.get(cam_id)
+        return self._feeds.get(cam_id)
 
-    def list(self):
-        return list(self._cams.values())
+    def is_online(self, cam_id: str) -> bool:
+        feed = self._feeds.get(cam_id)
+        return feed is not None and feed.get_jpeg() is not None
+
+    def stop_all(self):
+        with self._lock:
+            feeds = list(self._feeds.values())
+            self._feeds.clear()
+        for feed in feeds:
+            feed.stop()
 
 
 registry = CameraRegistry()

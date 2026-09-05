@@ -12,31 +12,41 @@ FRAME_SAMPLE_INTERVAL = float(os.environ.get("FRAME_SAMPLE_INTERVAL", "1.0"))
 # JPEG quality for MJPEG stream / snapshots served to the frontend.
 JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "80"))
 
-# Cameras: id -> (display name, location label, video filename in VIDEOS_DIR)
-CAMERAS = [
+# Seeded on first boot only (when the cameras table is empty), so the demo
+# has content immediately. Afterwards cameras are fully managed via the
+# CRUD API and persisted in Postgres.
+SEED_CAMERAS = [
     {
-        "id": "cam-01",
         "name": "Server Room",
         "location": "Building A - Basement",
-        "file": "mixkit-thief-in-server-room-being-recorded-by-a-camera-23498-hd-ready.mp4",
+        "zone_tags": ["server-room", "data-center", "restricted"],
+        "description": "Data center server room. Racks of networking and compute equipment. Restricted access area.",
+        "source_type": "file",
+        "source_path": "mixkit-thief-in-server-room-being-recorded-by-a-camera-23498-hd-ready.mp4",
     },
     {
-        "id": "cam-02",
         "name": "East Corridor",
         "location": "Building A - Floor 2",
-        "file": "mixkit-scientist-walking-down-a-corridor-4747-hd-ready.mp4",
+        "zone_tags": ["corridor", "hallway", "indoor"],
+        "description": "Indoor hallway on the second floor connecting offices and labs.",
+        "source_type": "file",
+        "source_path": "mixkit-scientist-walking-down-a-corridor-4747-hd-ready.mp4",
     },
     {
-        "id": "cam-03",
         "name": "Front Street",
         "location": "Main Entrance - Exterior",
-        "file": "mixkit-street-with-people-walking-at-dusk-3428-hd-ready.mp4",
+        "zone_tags": ["street", "exterior", "entrance", "parking-lot"],
+        "description": "Exterior view of the street and sidewalk in front of the main entrance.",
+        "source_type": "file",
+        "source_path": "mixkit-street-with-people-walking-at-dusk-3428-hd-ready.mp4",
     },
     {
-        "id": "cam-04",
         "name": "Reception Desk",
         "location": "Building A - Lobby",
-        "file": "mixkit-hands-of-a-person-typing-on-a-cell-phone-4915-hd-ready.mp4",
+        "zone_tags": ["lobby", "reception", "indoor", "entrance"],
+        "description": "Front desk area in the main lobby, monitors visitor check-in.",
+        "source_type": "file",
+        "source_path": "mixkit-hands-of-a-person-typing-on-a-cell-phone-4915-hd-ready.mp4",
     },
 ]
 
