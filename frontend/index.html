@@ -20,10 +20,10 @@
         <svg viewBox="0 0 24 24"><path d="M4 4h16v12H7l-3 3V4z"/></svg>
         <span>Chat</span>
       </button>
-      <button class="rail-btn disabled" data-view="alerts" title="Alerts — coming soon">
+      <button class="rail-btn" data-view="alerts" title="Alerts">
         <svg viewBox="0 0 24 24"><path d="M12 2a6 6 0 00-6 6v4l-2 4h16l-2-4V8a6 6 0 00-6-6zm0 18a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 20z"/></svg>
         <span>Alerts</span>
-        <span class="soon">soon</span>
+        <span class="rail-badge" id="rail-alerts-badge" hidden></span>
       </button>
       <button class="rail-btn disabled" data-view="archive" title="Archive — coming soon">
         <svg viewBox="0 0 24 24"><path d="M3 4h18v4H3V4zm1 5h16v11H4V9zm4 3v2h8v-2H8z"/></svg>
@@ -115,12 +115,14 @@
         </div>
       </section>
 
-      <!-- ============ ALERTS (coming soon) ============ -->
+      <!-- ============ ALERTS (event log) ============ -->
       <section class="view" id="view-alerts" hidden>
-        <div class="soon-panel">
-          <div class="soon-icon">⏱</div>
-          <div class="soon-title">Alerts — Coming soon</div>
-          <div class="soon-text">Automated background monitoring that flags unusual activity across all cameras in real time.</div>
+        <div class="events-page">
+          <div class="events-header">
+            <span>Event log</span>
+            <span class="events-sub">Automatic detections from the background monitor — not user questions.</span>
+          </div>
+          <div class="events-list" id="events-list"></div>
         </div>
       </section>
 

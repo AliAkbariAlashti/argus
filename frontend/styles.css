@@ -921,6 +921,128 @@ body {
   color: var(--red);
 }
 
+/* ---------- Events (Alerts) ---------- */
+
+.events-page {
+  padding: 20px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.events-header {
+  max-width: 1000px;
+  margin: 0 auto 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.events-header > span:first-child {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.events-sub {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.events-list {
+  max-width: 1000px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.event-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+}
+
+.event-row.event-critical {
+  border-color: rgba(255, 84, 112, 0.4);
+  background: rgba(255, 84, 112, 0.06);
+}
+
+.event-row.event-warning {
+  border-color: rgba(255, 180, 84, 0.4);
+}
+
+.event-thumb {
+  width: 84px;
+  height: 52px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #05070c;
+  border: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+
+.event-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.event-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.event-severity {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.event-severity-info {
+  background: var(--border);
+  color: var(--text-dim);
+}
+
+.event-severity-warning {
+  background: var(--amber);
+  color: #1a1200;
+}
+
+.event-severity-critical {
+  background: var(--red);
+  color: #2a0006;
+}
+
+.event-camera {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.event-time {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-left: auto;
+}
+
+.event-category {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.event-summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
 .btn-primary {
   background: var(--accent);
   color: #051018;

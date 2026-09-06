@@ -77,3 +77,27 @@ SEED_CAMERAS = [
 ]
 
 SUGGESTED_PROMPTS = []
+
+# ---- Background event monitor ----
+# Motion-gated, rate-limited VLM classification per camera, logged only on
+# a state change (something entering/leaving view, a weapon appearing) —
+# feeds the Alerts tab. Set MONITOR_ENABLED=0 to turn it off entirely if
+# the extra VLM calls shouldn't compete with live chat for the one GPU.
+MONITOR_ENABLED = os.environ.get("MONITOR_ENABLED", "1") not in ("0", "false", "False")
+
+# How often to check each camera for motion (cheap, no model — plain frame
+# diffing) before ever considering a VLM call.
+MONITOR_POLL_SECONDS = float(os.environ.get("MONITOR_POLL_SECONDS", "3.0"))
+
+# Fraction of downscaled pixels that must change between polls to count as
+# motion. Tuned loosely against the sample looping clips — raise it if a
+# camera with a static background triggers too often.
+MONITOR_MOTION_THRESHOLD = float(os.environ.get("MONITOR_MOTION_THRESHOLD", "0.02"))
+
+# Minimum time between VLM classification calls for the *same* camera, even
+# under continuous motion. This shares one GPU (and its thin VRAM headroom)
+# with live chat, so a busy camera can't be allowed to poll the model
+# constantly.
+MONITOR_MIN_VLM_INTERVAL_SECONDS = float(
+    os.environ.get("MONITOR_MIN_VLM_INTERVAL_SECONDS", "20.0")
+)

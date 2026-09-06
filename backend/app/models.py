@@ -64,3 +64,32 @@ class ChatMessage(Base):
             "snapshot": self.snapshot,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class Event(Base):
+    """A system-detected occurrence from the background monitor — not a
+    user chat turn. Logged only on a state change (something entering or
+    leaving view, a weapon becoming visible), so the table stays a
+    meaningful timeline instead of one row per monitor poll. Feeds the
+    Alerts tab."""
+
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    camera_id = Column(String, nullable=False)
+    severity = Column(String, nullable=False, default="info")  # "info" | "warning" | "critical"
+    category = Column(String, nullable=False)
+    summary = Column(Text, nullable=False, default="")
+    snapshot = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "camera_id": self.camera_id,
+            "severity": self.severity,
+            "category": self.category,
+            "summary": self.summary,
+            "snapshot": self.snapshot,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }

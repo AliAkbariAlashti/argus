@@ -304,6 +304,25 @@ def build_fleet_prompt(cameras: list, question: str) -> str:
     )
 
 
+def build_event_prompt(camera) -> str:
+    """Structured classification prompt for the background monitor — JSON,
+    not prose, so the caller can act on booleans instead of parsing natural
+    language. Kept intentionally narrow (person/vehicle/weapon) rather than
+    open-ended, since this runs unattended on a timer, not in response to a
+    specific user question."""
+    return (
+        f"You are a CCTV monitoring analyst reviewing camera \"{camera.name}\" "
+        f"at {camera.location}.\n"
+        "Respond with ONLY a single JSON object, no other text, in exactly "
+        "this shape:\n"
+        '{"person_present": bool, "vehicle_present": bool, '
+        '"weapon_visible": bool, "summary": "one short sentence"}\n'
+        "\"weapon_visible\" means a firearm, knife, or other weapon is "
+        "clearly visible — leave it false unless you are reasonably "
+        "confident, since this is what triggers a real alert."
+    )
+
+
 def metadata_answer(question: str, camera_dicts: list[dict]) -> str:
     """Deterministic answer for questions about the fleet itself (count,
     listing, online status) that don't require looking at any image.

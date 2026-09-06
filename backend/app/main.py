@@ -1,6 +1,4 @@
 import asyncio
-import base64
-import io
 import logging
 import shutil
 import threading
@@ -9,12 +7,10 @@ from pathlib import Path
 from typing import Optional
 
 import anyio
-import cv2
 from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -35,7 +31,9 @@ from .grounding import (
     metadata_answer,
     route_question,
 )
-from .models import Camera, ChatMessage
+from .imaging import frame_to_pil, image_to_data_uri
+from .models import Camera, ChatMessage, Event
+from .monitor import monitor
 from .vlm import vlm
 
 logging.basicConfig(level=logging.INFO)
@@ -82,11 +80,13 @@ def _seed_and_start_cameras():
 def on_startup():
     _seed_and_start_cameras()
     threading.Thread(target=vlm.load, daemon=True).start()
+    monitor.start()
 
 
 @app.on_event("shutdown")
 def on_shutdown():
     registry.stop_all()
+    monitor.stop()
 
 
 @app.get("/api/status")
@@ -259,6 +259,25 @@ def delete_camera(cam_id: str, db: Session = Depends(get_db)):
     return {"deleted": cam_id}
 
 
+# ---------- Events (background monitor) ----------
+
+
+@app.get("/api/events")
+def list_events(
+    limit: int = 100,
+    camera_id: Optional[str] = None,
+    severity: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Event).order_by(Event.id.desc())
+    if camera_id:
+        query = query.filter(Event.camera_id == camera_id)
+    if severity:
+        query = query.filter(Event.severity == severity)
+    rows = query.limit(min(limit, 500)).all()
+    return [r.to_dict() for r in rows]
+
+
 # ---------- Streaming ----------
 
 
@@ -319,19 +338,12 @@ async def camera_snapshot(cam_id: str):
 #      the intuitive thing.
 
 
-def _to_pil(frame):
-    """BGR numpy frame -> RGB PIL image. Resolution/VRAM budget is enforced
-    by the processor's min_pixels/max_pixels (see vlm.py), not here."""
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(rgb)
-
-
 def _frame_to_image(cam_id: str):
     feed = registry.get(cam_id)
     frame = feed.get_frame() if feed else None
     if frame is None:
         return None
-    return _to_pil(frame)
+    return frame_to_pil(frame)
 
 
 def _frame_sequence_to_images(cam_id: str, count: int):
@@ -339,24 +351,7 @@ def _frame_sequence_to_images(cam_id: str, count: int):
     feed = registry.get(cam_id)
     if feed is None:
         return []
-    return [_to_pil(f) for f in feed.get_frame_sequence(count)]
-
-
-def _image_to_data_uri(img: Image.Image, max_width: int = 320) -> Optional[str]:
-    """Small JPEG data URI of the frame an answer was based on, so the UI can
-    show what the model actually saw. Downscaled — it's a thumbnail, and it
-    gets stored on every message."""
-    try:
-        thumb = img.copy()
-        if thumb.width > max_width:
-            ratio = max_width / thumb.width
-            thumb = thumb.resize((max_width, max(1, int(thumb.height * ratio))))
-        buf = io.BytesIO()
-        thumb.save(buf, format="JPEG", quality=70)
-        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-    except Exception:  # noqa: BLE001
-        log.exception("Failed to build snapshot thumbnail")
-        return None
+    return [frame_to_pil(f) for f in feed.get_frame_sequence(count)]
 
 
 def _primary_camera_index(answer: str, cameras: list[Camera]) -> int:
@@ -473,7 +468,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail=str(exc))
 
         used = [c.id for c in used_cameras]
-        snapshot = _image_to_data_uri(images[_primary_camera_index(answer, used_cameras)])
+        snapshot = image_to_data_uri(images[_primary_camera_index(answer, used_cameras)])
         _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
         return {
             "question": req.question,
@@ -501,7 +496,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
         log.exception("Inference failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    snapshot = _image_to_data_uri(images[-1])
+    snapshot = image_to_data_uri(images[-1])
     _save_turn(db, "assistant", answer, cameras_used=[camera.id], snapshot=snapshot)
     return {
         "question": req.question,

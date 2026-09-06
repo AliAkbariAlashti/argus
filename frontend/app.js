@@ -33,6 +33,9 @@ const el = {
   btnAddCamera: document.getElementById("btn-add-camera"),
   railCamerasBadge: document.getElementById("rail-cameras-badge"),
 
+  eventsList: document.getElementById("events-list"),
+  railAlertsBadge: document.getElementById("rail-alerts-badge"),
+
   healthPage: document.getElementById("health-page"),
 
   modalOverlay: document.getElementById("modal-overlay"),
@@ -115,6 +118,7 @@ function switchView(view) {
 
   if (view === "cameras") renderCamerasTable();
   if (view === "health") loadHealth();
+  if (view === "alerts") loadEvents().then(markEventsSeen);
 
   // The live MJPEG connection stays open as long as the <img> has a src,
   // even while its view is hidden — stop it when navigating away, and
@@ -641,6 +645,87 @@ function renderHealth(data) {
   `;
 }
 
+/* ---------- events (alerts) ---------- */
+// The badge/seen tracking lives in localStorage, per-browser — there's no
+// concept of "read" server-side, this is just a lightweight "anything new
+// since I last looked" indicator on the rail icon.
+
+const EVENTS_SEEN_KEY = "sentinel_events_last_seen_id";
+let latestEvents = [];
+
+function getLastSeenEventId() {
+  try {
+    return parseInt(localStorage.getItem(EVENTS_SEEN_KEY) || "0", 10) || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function markEventsSeen() {
+  if (!latestEvents.length) return;
+  try {
+    localStorage.setItem(EVENTS_SEEN_KEY, String(latestEvents[0].id));
+  } catch (e) {
+    // Private-browsing/blocked storage shouldn't break the view.
+  }
+  renderAlertsBadge();
+}
+
+async function loadEvents() {
+  try {
+    const res = await fetch(`${API}/api/events?limit=100`);
+    if (!res.ok) return;
+    latestEvents = await res.json();
+    if (currentView === "alerts") renderEvents();
+    renderAlertsBadge();
+  } catch (e) {
+    // Transient errors shouldn't break other views.
+  }
+}
+setInterval(loadEvents, 10000);
+
+function renderAlertsBadge() {
+  const lastSeen = getLastSeenEventId();
+  const unseen = latestEvents.filter((e) => e.id > lastSeen && e.severity !== "info");
+  el.railAlertsBadge.hidden = unseen.length === 0;
+  el.railAlertsBadge.textContent = unseen.length;
+  el.railAlertsBadge.classList.toggle("warn", unseen.some((e) => e.severity === "critical"));
+}
+
+function eventCameraLabel(camId) {
+  return cameras.find((c) => c.id === camId)?.name || "Unknown camera";
+}
+
+function renderEvents() {
+  el.eventsList.innerHTML = "";
+  if (latestEvents.length === 0) {
+    el.eventsList.innerHTML = `<div class="empty-state">No events yet. The background monitor logs activity here as it happens.</div>`;
+    return;
+  }
+  for (const ev of latestEvents) {
+    const row = document.createElement("div");
+    row.className = `event-row event-${ev.severity}`;
+    const time = ev.created_at ? new Date(ev.created_at).toLocaleString() : "";
+    row.innerHTML = `
+      ${
+        ev.snapshot
+          ? `<img class="event-thumb" src="${ev.snapshot}" />`
+          : `<div class="event-thumb"></div>`
+      }
+      <div class="event-info">
+        <div class="event-top">
+          <span class="event-severity event-severity-${ev.severity}">${escapeHtml(ev.severity)}</span>
+          <span class="event-camera">${escapeHtml(eventCameraLabel(ev.camera_id))}</span>
+          <span class="event-time">${time}</span>
+        </div>
+        <div class="event-category">${escapeHtml(ev.category)}</div>
+        <div class="event-summary">${escapeHtml(ev.summary)}</div>
+      </div>
+    `;
+    el.eventsList.appendChild(row);
+  }
+}
+
 /* ---------- utils ---------- */
 
 function escapeHtml(str) {
@@ -655,3 +740,4 @@ loadCameras();
 loadPrompts();
 renderChat();
 loadChatHistory();
+loadEvents();
