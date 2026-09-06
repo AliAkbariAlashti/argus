@@ -246,15 +246,17 @@ def build_grounded_prompt(camera, question: str, frame_count: int = 1) -> str:
     """Wraps the user's question with a short grounding preamble describing
     the camera, so the VLM's answer is contextualized without needing a
     separate retrieval/routing model call. When several frames are attached
-    they are consecutive moments, so say so — otherwise the model describes
-    them as unrelated images instead of reading movement from them."""
+    they're sent as a native video clip (see vlm.ask's `fps` path) so the
+    model already knows their real spacing/order via M-RoPE — this note only
+    adds task framing (which moment "now" is), not timing, which used to be
+    a guessed sentence here."""
     tags = ", ".join(camera.zone_tags or []) or "none"
 
     if frame_count > 1:
         frames_note = (
-            f"The {frame_count} images are consecutive frames from this camera, "
-            "about a second apart, oldest first — use them to judge movement "
-            "and describe the current situation (the last frame is now).\n"
+            "This is a short live clip from the camera, oldest frame first — "
+            "use it to judge movement and describe the current situation "
+            "(the last frame is now).\n"
         )
     else:
         frames_note = ""

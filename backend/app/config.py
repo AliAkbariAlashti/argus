@@ -22,11 +22,14 @@ MOTION_BUFFER_SECONDS = float(os.environ.get("MOTION_BUFFER_SECONDS", "1.0"))
 # always use one frame per camera to keep the image count manageable.
 CHAT_FRAMES_SINGLE_CAMERA = int(os.environ.get("CHAT_FRAMES_SINGLE_CAMERA", "3"))
 
-# Longest edge (px) of any frame sent to the model. A 7B model in BF16 leaves
-# only a few GB spare on a 20GB card, and a fleet question can attach one
-# frame per camera — downscaling keeps that comfortably inside VRAM without
-# costing meaningful detail at CCTV framing.
-VLM_MAX_IMAGE_EDGE = int(os.environ.get("VLM_MAX_IMAGE_EDGE", "896"))
+# Vision-token budget per frame, in pixels — passed straight to Qwen2.5-VL's
+# processor (its documented lever for resolution/VRAM tradeoff; the model
+# tokenizes images at a resolution-dependent token count, so this is a much
+# more direct control than resizing to a fixed edge length). The 7B model
+# idles at ~18.5GB/20GB just loaded, so keep max_pixels conservative — a
+# fleet question attaches one frame per camera in a single request.
+VLM_MIN_PIXELS = int(os.environ.get("VLM_MIN_PIXELS", str(256 * 28 * 28)))
+VLM_MAX_PIXELS = int(os.environ.get("VLM_MAX_PIXELS", str(768 * 28 * 28)))
 
 # How many prior turns of the conversation to replay to the model.
 CHAT_HISTORY_TURNS = int(os.environ.get("CHAT_HISTORY_TURNS", "6"))
@@ -73,15 +76,4 @@ SEED_CAMERAS = [
     },
 ]
 
-SUGGESTED_PROMPTS = [
-    "Describe this image in detail.",
-    "What is happening in this image?",
-    "What objects are visible in the image?",
-    "How many people are visible?",
-    "What is the person doing?",
-    "What is the person holding?",
-    "What kind of environment is shown?",
-    "Is there anything unusual or potentially dangerous in this image?",
-    "Read and extract all visible text from this image.",
-    "Return a JSON description with people, objects, actions, and environment.",
-]
+SUGGESTED_PROMPTS = []

@@ -274,7 +274,7 @@ async function loadChatHistory() {
 function renderChat() {
   el.chatLog.innerHTML = "";
   if (chatLog.length === 0) {
-    el.chatLog.innerHTML = `<div class="chat-empty">No conversation yet. Ask about a specific camera, or something across all of them — try one of the prompts below.</div>`;
+    el.chatLog.innerHTML = `<div class="chat-empty">No conversation yet. Ask about a specific camera, or something across all of them.</div>`;
     return;
   }
   for (const msg of chatLog) {

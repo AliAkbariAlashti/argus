@@ -23,10 +23,10 @@ from .config import (
     CHAT_FRAMES_SINGLE_CAMERA,
     CHAT_HISTORY_TURNS,
     MODEL_ID,
+    MOTION_BUFFER_SECONDS,
     SEED_CAMERAS,
     SUGGESTED_PROMPTS,
     VIDEOS_DIR,
-    VLM_MAX_IMAGE_EDGE,
 )
 from .db import Base, engine, get_db
 from .grounding import (
@@ -320,14 +320,10 @@ async def camera_snapshot(cam_id: str):
 
 
 def _to_pil(frame):
-    """BGR numpy frame -> RGB PIL image, downscaled to the VRAM budget."""
+    """BGR numpy frame -> RGB PIL image. Resolution/VRAM budget is enforced
+    by the processor's min_pixels/max_pixels (see vlm.py), not here."""
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    img = Image.fromarray(rgb)
-    longest = max(img.width, img.height)
-    if longest > VLM_MAX_IMAGE_EDGE:
-        scale = VLM_MAX_IMAGE_EDGE / longest
-        img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
-    return img
+    return Image.fromarray(rgb)
 
 
 def _frame_to_image(cam_id: str):
@@ -361,6 +357,25 @@ def _image_to_data_uri(img: Image.Image, max_width: int = 320) -> Optional[str]:
     except Exception:  # noqa: BLE001
         log.exception("Failed to build snapshot thumbnail")
         return None
+
+
+def _primary_camera_index(answer: str, cameras: list[Camera]) -> int:
+    """Which camera a fleet answer is primarily about, for the snapshot
+    thumbnail — the camera whose name appears earliest in the answer text,
+    or the first camera if none is named. Fleet answers are prompted to
+    always name the relevant camera(s) (see build_fleet_prompt), so this
+    matches the thumbnail to what the text actually says instead of always
+    showing whichever camera happened to be first by creation order."""
+    answer_lower = answer.lower()
+    best_idx, best_pos = 0, None
+    for i, cam in enumerate(cameras):
+        name = (cam.name or "").lower().strip()
+        if not name:
+            continue
+        pos = answer_lower.find(name)
+        if pos != -1 and (best_pos is None or pos < best_pos):
+            best_idx, best_pos = i, pos
+    return best_idx
 
 
 def _recent_history(db: Session) -> list[dict]:
@@ -458,7 +473,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail=str(exc))
 
         used = [c.id for c in used_cameras]
-        snapshot = _image_to_data_uri(images[0])
+        snapshot = _image_to_data_uri(images[_primary_camera_index(answer, used_cameras)])
         _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
         return {
             "question": req.question,
@@ -476,7 +491,12 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
     grounded_question = build_grounded_prompt(camera, req.question, frame_count=len(images))
 
     try:
-        answer = vlm.ask(images, grounded_question, history=history)
+        answer = vlm.ask(
+            images,
+            grounded_question,
+            history=history,
+            fps=1.0 / MOTION_BUFFER_SECONDS,
+        )
     except Exception as exc:  # noqa: BLE001
         log.exception("Inference failed")
         raise HTTPException(status_code=500, detail=str(exc))
