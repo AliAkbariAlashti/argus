@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sentinel Vision</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -12,9 +15,10 @@
       <div class="rail-brand" title="Sentinel Vision">
         <span class="brand-mark"></span>
       </div>
-      <button class="rail-btn active" data-view="dashboard" title="Dashboard">
-        <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4V4zm9 0h7v4h-7V4zm0 7h7v9h-7v-9zM4 14h7v6H4v-6z"/></svg>
-        <span>Dashboard</span>
+
+      <button class="rail-btn active" data-view="dashboard" title="Search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg>
+        <span>Search</span>
       </button>
       <button class="rail-btn" data-view="chat" title="Chat">
         <svg viewBox="0 0 24 24"><path d="M4 4h16v12H7l-3 3V4z"/></svg>
@@ -25,20 +29,25 @@
         <span>Alerts</span>
         <span class="rail-badge" id="rail-alerts-badge" hidden></span>
       </button>
+      <button class="rail-btn" data-view="rules" title="Alert Rules">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16v2H4V5zm0 6h10v2H4v-2zm0 6h16v2H4v-2zm13-7l3 3-3 3v-2h-4v-2h4V10z"/></svg>
+        <span>Rules</span>
+      </button>
       <button class="rail-btn disabled" data-view="archive" title="Archive — coming soon">
         <svg viewBox="0 0 24 24"><path d="M3 4h18v4H3V4zm1 5h16v11H4V9zm4 3v2h8v-2H8z"/></svg>
         <span>Archive</span>
         <span class="soon">soon</span>
       </button>
-      <button class="rail-btn" data-view="cameras" title="Cameras">
+      <button class="rail-btn" data-view="directory" title="Directory">
         <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
-        <span>Cameras</span>
+        <span>Directory</span>
         <span class="rail-badge" id="rail-cameras-badge" hidden></span>
       </button>
       <button class="rail-btn" data-view="health" title="System health">
         <svg viewBox="0 0 24 24"><path d="M3 11h3.4l1.8-5.2a1 1 0 011.9.05l3 9.3 1.6-4.5a1 1 0 01.95-.65H21v2h-4.6l-2.5 6.9a1 1 0 01-1.9-.05l-3-9.2-1.5 4.4a1 1 0 01-.95.65H3v-2z"/></svg>
         <span>Health</span>
       </button>
+
       <div class="rail-spacer"></div>
       <div class="rail-status" id="rail-status" title="Model status">
         <span class="dot"></span>
@@ -47,7 +56,7 @@
 
     <div class="main-col">
       <header class="topbar">
-        <div class="topbar-title" id="topbar-title">Dashboard</div>
+        <div class="topbar-title" id="topbar-title">Search</div>
         <div class="topbar-status">
           <span id="model-status" class="pill pill-loading">
             <span class="dot"></span> Loading model…
@@ -56,9 +65,63 @@
         </div>
       </header>
 
-      <!-- ============ DASHBOARD VIEW ============ -->
+      <!-- ============ SEARCH / DASHBOARD ============ -->
       <section class="view" id="view-dashboard">
-        <div class="grid-wall" id="dashboard-grid"></div>
+        <div class="search-page">
+          <div class="stat-row" id="stat-row"></div>
+
+          <div class="search-hero">
+            <h1 class="search-title">What are you looking for?</h1>
+            <p class="search-subtitle">Ask in plain language — across one camera or the whole site.</p>
+
+            <form id="search-form" class="search-form">
+              <svg class="search-form-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg>
+              <input
+                id="search-input"
+                class="search-input"
+                type="text"
+                placeholder="Describe what you're looking for…"
+                autocomplete="off"
+              />
+              <button type="submit" class="search-submit" id="search-submit" aria-label="Search">
+                <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>
+              </button>
+            </form>
+
+            <div class="search-chips" id="search-chips"></div>
+          </div>
+
+          <div class="search-result" id="search-result" hidden></div>
+
+          <div class="search-lower">
+            <div class="recent-queries-col">
+              <div class="section-label">Recent queries</div>
+              <div class="recent-queries" id="recent-queries">
+                <div class="empty-state-inline">Nothing asked yet this session.</div>
+              </div>
+            </div>
+
+            <div class="fleet-strip-col">
+              <div class="section-label">Live sources</div>
+              <div class="fleet-strip" id="fleet-strip"></div>
+            </div>
+          </div>
+
+          <div class="quick-actions">
+            <button class="quick-action" id="qa-add-file">
+              <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+              Add file
+            </button>
+            <button class="quick-action" id="qa-add-camera">
+              <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
+              Add camera
+            </button>
+            <button class="quick-action" id="qa-add-rule">
+              <svg viewBox="0 0 24 24"><path d="M12 2a6 6 0 00-6 6v4l-2 4h16l-2-4V8a6 6 0 00-6-6z"/></svg>
+              New alert rule
+            </button>
+          </div>
+        </div>
       </section>
 
       <!-- ============ CHAT VIEW ============ -->
@@ -71,7 +134,7 @@
           <div class="viewer">
             <div class="viewer-header">
               <div>
-                <div class="viewer-title" id="viewer-title">Select a camera</div>
+                <div class="viewer-title" id="viewer-title">Select a source</div>
                 <div class="viewer-location" id="viewer-location">&nbsp;</div>
               </div>
               <div class="live-badge"><span class="dot dot-live"></span>LIVE</div>
@@ -79,7 +142,7 @@
             <div class="viewer-frame">
               <img id="viewer-stream" class="viewer-stream" alt="Camera stream" />
               <div id="viewer-placeholder" class="viewer-placeholder">
-                Choose a camera from the strip to begin monitoring
+                Choose a source from the strip to begin monitoring
               </div>
             </div>
           </div>
@@ -88,7 +151,7 @@
             <div class="chat-header">
               <div>
                 <span>AI Analyst</span>
-                <span class="chat-sub">Ask about any camera, or all of them at once</span>
+                <span class="chat-sub">Ask about any source, or all of them at once</span>
               </div>
               <button class="btn-icon" id="btn-clear-chat" title="Clear conversation">Clear</button>
             </div>
@@ -106,7 +169,7 @@
                 id="chat-input"
                 class="chat-input"
                 type="text"
-                placeholder="Ask about a camera, or all of them…"
+                placeholder="Ask about a source, or all of them…"
                 autocomplete="off"
               />
               <button type="submit" class="chat-send" id="chat-send">Ask</button>
@@ -128,7 +191,7 @@
           <div class="events-toolbar">
             <input type="text" id="events-search" class="events-search" placeholder="Search events…" />
             <select id="events-camera-filter" class="events-select">
-              <option value="">All cameras</option>
+              <option value="">All sources</option>
             </select>
             <select id="events-severity-filter" class="events-select">
               <option value="">All severities</option>
@@ -138,22 +201,27 @@
             </select>
           </div>
 
+          <div class="events-list" id="events-list"></div>
+        </div>
+      </section>
+
+      <!-- ============ ALERT RULES ============ -->
+      <section class="view" id="view-rules" hidden>
+        <div class="rules-page">
           <div class="alert-rules-panel">
             <div class="alert-rules-header">
               <span>Alert rules</span>
-              <span class="events-sub">Tell the monitor what to specifically watch for, per camera or across the fleet.</span>
+              <span class="events-sub">Tell the monitor what to specifically watch for, per source or across the fleet.</span>
             </div>
             <form id="alert-rule-form" class="alert-rule-form">
               <select id="alert-rule-camera" class="events-select">
-                <option value="">All cameras</option>
+                <option value="">All sources</option>
               </select>
               <input type="text" id="alert-rule-target" placeholder='e.g. &quot;car&quot;, &quot;backpack left behind&quot;' required />
               <button type="submit" class="btn-primary">Add rule</button>
             </form>
             <div class="alert-rules-list" id="alert-rules-list"></div>
           </div>
-
-          <div class="events-list" id="events-list"></div>
         </div>
       </section>
 
@@ -162,17 +230,17 @@
         <div class="soon-panel">
           <div class="soon-icon">🗄</div>
           <div class="soon-title">Archive — Coming soon</div>
-          <div class="soon-text">Searchable history of recorded footage and past AI analysis for every camera.</div>
+          <div class="soon-text">Searchable history of recorded footage and past AI analysis for every source.</div>
         </div>
       </section>
 
-      <!-- ============ CAMERAS (CRUD) ============ -->
-      <section class="view" id="view-cameras" hidden>
+      <!-- ============ DIRECTORY (camera CRUD) ============ -->
+      <section class="view" id="view-directory" hidden>
         <div class="cameras-page">
           <div class="cameras-list-col">
             <div class="cameras-list-header">
-              <span>All cameras</span>
-              <button class="btn-primary" id="btn-add-camera">+ Add Camera</button>
+              <span>All sources</span>
+              <button class="btn-primary" id="btn-add-camera">+ Add source</button>
             </div>
             <div class="cameras-table" id="cameras-table"></div>
           </div>
@@ -190,7 +258,7 @@
   <div class="modal-overlay" id="modal-overlay" hidden>
     <div class="modal">
       <div class="modal-header">
-        <span>Add Camera</span>
+        <span>Add source</span>
         <button class="modal-close" id="modal-close">&times;</button>
       </div>
       <form id="camera-form" class="modal-body">
@@ -203,12 +271,12 @@
           <input name="location" placeholder="e.g. Building B - Exterior" />
         </label>
         <label class="field">
-          <span>Zone tags <em>(comma-separated, helps the AI find this camera)</em></span>
+          <span>Zone tags <em>(comma-separated, helps the AI find this source)</em></span>
           <input name="zone_tags" placeholder="e.g. parking-lot, exterior, entrance" />
         </label>
         <label class="field">
           <span>Description</span>
-          <textarea name="description" rows="3" placeholder="Short note about what this camera covers"></textarea>
+          <textarea name="description" rows="3" placeholder="Short note about what this source covers"></textarea>
         </label>
 
         <div class="field-tabs">
@@ -232,7 +300,7 @@
 
         <div class="modal-actions">
           <button type="button" class="btn-ghost" id="btn-cancel-camera">Cancel</button>
-          <button type="submit" class="btn-primary" id="btn-submit-camera">Add Camera</button>
+          <button type="submit" class="btn-primary" id="btn-submit-camera">Add source</button>
         </div>
       </form>
     </div>
@@ -242,7 +310,7 @@
   <div class="modal-overlay" id="edit-modal-overlay" hidden>
     <div class="modal">
       <div class="modal-header">
-        <span>Edit Camera</span>
+        <span>Edit source</span>
         <button class="modal-close" id="edit-modal-close">&times;</button>
       </div>
       <form id="edit-camera-form" class="modal-body">
@@ -255,7 +323,7 @@
           <input name="location" />
         </label>
         <label class="field">
-          <span>Zone tags <em>(comma-separated, helps the AI find this camera)</em></span>
+          <span>Zone tags <em>(comma-separated, helps the AI find this source)</em></span>
           <input name="zone_tags" />
         </label>
         <label class="field">

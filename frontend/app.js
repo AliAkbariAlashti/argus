@@ -14,7 +14,17 @@ const el = {
   railStatus: document.getElementById("rail-status"),
   topbarTitle: document.getElementById("topbar-title"),
 
-  dashboardGrid: document.getElementById("dashboard-grid"),
+  statRow: document.getElementById("stat-row"),
+  searchForm: document.getElementById("search-form"),
+  searchInput: document.getElementById("search-input"),
+  searchSubmit: document.getElementById("search-submit"),
+  searchChips: document.getElementById("search-chips"),
+  searchResult: document.getElementById("search-result"),
+  recentQueries: document.getElementById("recent-queries"),
+  fleetStrip: document.getElementById("fleet-strip"),
+  qaAddFile: document.getElementById("qa-add-file"),
+  qaAddCamera: document.getElementById("qa-add-camera"),
+  qaAddRule: document.getElementById("qa-add-rule"),
 
   chatStrip: document.getElementById("chat-strip"),
   viewerTitle: document.getElementById("viewer-title"),
@@ -63,11 +73,12 @@ const el = {
 };
 
 const VIEW_TITLES = {
-  dashboard: "Dashboard",
+  dashboard: "Search",
   chat: "Chat",
   alerts: "Alerts",
+  rules: "Alert Rules",
   archive: "Archive",
-  cameras: "Cameras",
+  directory: "Directory",
   health: "System Health",
 };
 
@@ -125,12 +136,15 @@ function switchView(view) {
   });
   el.topbarTitle.textContent = VIEW_TITLES[view] || "";
 
-  if (view === "cameras") renderCamerasTable();
+  if (view === "directory") renderCamerasTable();
   if (view === "health") loadHealth();
+  if (view === "dashboard") renderFleetStrip();
   if (view === "alerts") {
     loadEvents();
-    loadAlertRules();
     markEventsSeen();
+  }
+  if (view === "rules") {
+    loadAlertRules();
   }
 
   // The live MJPEG connection stays open as long as the <img> has a src,
@@ -151,11 +165,12 @@ function switchView(view) {
 async function loadCameras() {
   const res = await fetch(`${API}/api/cameras`);
   cameras = await res.json();
-  renderDashboard();
+  renderFleetStrip();
   renderChatStrip();
   renderRailBadge();
+  renderStatRow();
   populateCameraSelects();
-  if (currentView === "cameras") renderCamerasTable();
+  if (currentView === "directory") renderCamerasTable();
 
   if (!activeCameraId && cameras.length) {
     selectCamera(cameras[0].id);
@@ -184,41 +199,153 @@ function refreshThumbnails() {
 setInterval(refreshThumbnails, 4000);
 setInterval(loadCameras, 15000);
 
-/* ---------- dashboard ---------- */
+/* ==========================================================================
+   Search / Dashboard
+   ========================================================================== */
 
-function renderDashboard() {
-  el.dashboardGrid.innerHTML = "";
+const STAT_ICONS = {
+  events: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a6 6 0 00-6 6v4l-2 4h16l-2-4V8a6 6 0 00-6-6z"/></svg>',
+  sources: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>',
+  footage: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+};
+
+let recentEventCount24h = 0;
+
+function renderStatRow() {
+  const online = cameras.filter((c) => c.online).length;
+  el.statRow.innerHTML = `
+    <div class="stat">
+      <div class="stat-label">${STAT_ICONS.events} Events</div>
+      <div class="stat-value">${recentEventCount24h}</div>
+      <div class="stat-sub">in the last 24 hours</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">${STAT_ICONS.sources} Sources</div>
+      <div class="stat-value">${cameras.length}</div>
+      <div class="stat-sub">${online} online now</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">${STAT_ICONS.footage} Searchable footage</div>
+      <div class="stat-value">Live<span class="stat-unit">+ history</span></div>
+      <div class="stat-sub">every source, continuously</div>
+    </div>
+  `;
+}
+
+function renderFleetStrip() {
+  el.fleetStrip.innerHTML = "";
   if (cameras.length === 0) {
-    el.dashboardGrid.innerHTML = `<div class="empty-state">No cameras yet. Go to Cameras to add one.</div>`;
+    el.fleetStrip.innerHTML = `<div class="empty-state-inline">No sources yet — add one below.</div>`;
     return;
   }
   for (const cam of cameras) {
     const tile = document.createElement("div");
-    tile.className = "tile";
+    tile.className = "fleet-tile";
     tile.onclick = () => {
       switchView("chat");
       selectCamera(cam.id);
     };
     tile.innerHTML = `
-      <div class="tile-frame">
+      <div class="fleet-tile-frame">
         ${
           cam.online
             ? `<img data-thumb-for="${cam.id}" src="${API}/api/cameras/${cam.id}/snapshot" />`
-            : `<div class="tile-offline">No signal</div>`
+            : `<div class="fleet-tile-offline">No signal</div>`
         }
-        <div class="tile-live"><span class="dot"></span>LIVE</div>
+        <div class="fleet-tile-live"><span class="dot"></span>LIVE</div>
       </div>
-      <div class="tile-meta">
-        <div class="tile-name">${escapeHtml(cam.name)}</div>
-        <div class="tile-location">${escapeHtml(cam.location)}</div>
-        <div class="tile-tags">
-          ${(cam.zone_tags || []).map((t) => `<span class="tile-tag">${escapeHtml(t)}</span>`).join("")}
-        </div>
-      </div>
+      <div class="fleet-tile-name">${escapeHtml(cam.name)}</div>
     `;
-    el.dashboardGrid.appendChild(tile);
+    el.fleetStrip.appendChild(tile);
   }
 }
+
+const recentQueries = [];
+
+function renderRecentQueries() {
+  if (recentQueries.length === 0) {
+    el.recentQueries.innerHTML = `<div class="empty-state-inline">Nothing asked yet this session.</div>`;
+    return;
+  }
+  el.recentQueries.innerHTML = "";
+  for (const q of recentQueries.slice(0, 8)) {
+    const item = document.createElement("div");
+    item.className = "recent-query-item";
+    item.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+      <span class="recent-query-text">${escapeHtml(q)}</span>
+    `;
+    item.onclick = () => {
+      el.searchInput.value = q;
+      el.searchForm.requestSubmit();
+    };
+    el.recentQueries.appendChild(item);
+  }
+}
+
+el.searchForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const question = el.searchInput.value.trim();
+  if (!question) return;
+
+  recentQueries.unshift(question);
+  renderRecentQueries();
+
+  el.searchSubmit.disabled = true;
+  el.searchResult.hidden = false;
+  el.searchResult.innerHTML = `
+    <div class="search-result-q">${escapeHtml(question)}</div>
+    <div class="search-result-answer thinking">Analyzing…</div>
+  `;
+
+  try {
+    const res = await fetch(`${API}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, focused_camera_id: activeCameraId }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      el.searchResult.innerHTML = `
+        <div class="search-result-q">${escapeHtml(question)}</div>
+        <div class="search-result-answer">${escapeHtml(data.detail || "Something went wrong.")}</div>
+      `;
+    } else {
+      const label = camerasUsedLabel(data.cameras_used);
+      el.searchResult.innerHTML = `
+        <div class="search-result-q">${escapeHtml(question)}</div>
+        <div class="search-result-answer">${escapeHtml(data.answer)}</div>
+        <div class="search-result-meta">
+          ${label ? `<span class="search-result-cam">${escapeHtml(label)}</span>` : ""}
+        </div>
+      `;
+      if (data.snapshot) {
+        const img = document.createElement("img");
+        img.className = "search-result-snapshot";
+        img.src = data.snapshot;
+        img.alt = "Frame analyzed";
+        el.searchResult.appendChild(img);
+      }
+    }
+  } catch (err) {
+    el.searchResult.innerHTML = `
+      <div class="search-result-q">${escapeHtml(question)}</div>
+      <div class="search-result-answer">Could not reach the analysis server.</div>
+    `;
+  }
+
+  el.searchSubmit.disabled = false;
+
+  // Also feed this into the persistent Chat log, so a search asked from
+  // the Dashboard and a question asked from Chat are one conversation,
+  // not two separate silos.
+  await loadChatHistory();
+});
+
+el.qaAddFile.addEventListener("click", () => openCameraModal());
+el.qaAddCamera.addEventListener("click", () => openCameraModal());
+el.qaAddRule.addEventListener("click", () => switchView("rules"));
 
 /* ---------- chat view ---------- */
 
@@ -257,6 +384,7 @@ async function loadPrompts() {
   const res = await fetch(`${API}/api/prompts`);
   const prompts = await res.json();
   el.promptChips.innerHTML = "";
+  el.searchChips.innerHTML = "";
   for (const p of prompts) {
     const chip = document.createElement("div");
     chip.className = "chip";
@@ -266,6 +394,17 @@ async function loadPrompts() {
       el.chatForm.requestSubmit();
     };
     el.promptChips.appendChild(chip);
+
+    if (el.searchChips.childElementCount < 4) {
+      const searchChip = document.createElement("div");
+      searchChip.className = "chip";
+      searchChip.textContent = p;
+      searchChip.onclick = () => {
+        el.searchInput.value = p;
+        el.searchForm.requestSubmit();
+      };
+      el.searchChips.appendChild(searchChip);
+    }
   }
 }
 
@@ -292,7 +431,7 @@ async function loadChatHistory() {
 function renderChat() {
   el.chatLog.innerHTML = "";
   if (chatLog.length === 0) {
-    el.chatLog.innerHTML = `<div class="chat-empty">No conversation yet. Ask about a specific camera, or something across all of them.</div>`;
+    el.chatLog.innerHTML = `<div class="chat-empty">No conversation yet. Ask about a specific source, or something across all of them.</div>`;
     return;
   }
   for (const msg of chatLog) {
@@ -307,7 +446,7 @@ function camerasUsedLabel(camIds) {
     .map((id) => cameras.find((c) => c.id === id)?.name)
     .filter(Boolean);
   if (names.length === 0) return null;
-  return names.length === 1 ? `📷 ${names[0]}` : `📷 ${names.join(", ")}`;
+  return names.length === 1 ? names[0] : names.join(", ");
 }
 
 function appendMessageEl(role, text, thinking, camerasUsed, snapshot) {
@@ -335,7 +474,7 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot) {
 
     if (label) {
       const span = document.createElement("span");
-      span.textContent = label;
+      span.textContent = `📷 ${label}`;
       meta.appendChild(span);
     }
 
@@ -415,12 +554,12 @@ el.chatForm.addEventListener("submit", async (e) => {
   el.chatSend.disabled = false;
 });
 
-/* ---------- cameras CRUD ---------- */
+/* ---------- directory (camera CRUD) ---------- */
 
 function renderCamerasTable() {
   el.camerasTable.innerHTML = "";
   if (cameras.length === 0) {
-    el.camerasTable.innerHTML = `<div class="empty-state">No cameras yet. Click "+ Add Camera" to create one.</div>`;
+    el.camerasTable.innerHTML = `<div class="empty-state">No sources yet. Click "+ Add source" to create one.</div>`;
     return;
   }
   for (const cam of cameras) {
@@ -452,7 +591,7 @@ function renderCamerasTable() {
 }
 
 async function deleteCamera(camId, name) {
-  if (!confirm(`Remove camera "${name}"? This cannot be undone.`)) return;
+  if (!confirm(`Remove source "${name}"? This cannot be undone.`)) return;
   await fetch(`${API}/api/cameras/${camId}`, { method: "DELETE" });
   if (activeCameraId === camId) activeCameraId = null;
   await loadCameras();
@@ -504,7 +643,7 @@ el.cameraForm.addEventListener("submit", async (e) => {
     });
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.detail || "Failed to add camera.");
+      throw new Error(data.detail || "Failed to add source.");
     }
     closeCameraModal();
     await loadCameras();
@@ -517,7 +656,7 @@ el.cameraForm.addEventListener("submit", async (e) => {
   } finally {
     clearTimeout(timeoutId);
     el.btnSubmitCamera.disabled = false;
-    el.btnSubmitCamera.textContent = "Add Camera";
+    el.btnSubmitCamera.textContent = "Add source";
   }
 });
 
@@ -637,10 +776,10 @@ function renderHealth(data) {
       </div>
 
       <div class="health-card health-card-wide">
-        <div class="health-card-title">Cameras</div>
+        <div class="health-card-title">Sources</div>
         ${
           (data.cameras || []).length === 0
-            ? `<div class="health-muted">No cameras configured.</div>`
+            ? `<div class="health-muted">No sources configured.</div>`
             : data.cameras
                 .map(
                   (c) => `
@@ -704,6 +843,11 @@ async function pollRecentEvents() {
     const newCritical = rows.find((e) => e.severity === "critical" && !seenIds.has(e.id));
     recentUnfiltered = rows;
     renderAlertsBadge();
+
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    recentEventCount24h = rows.filter((e) => e.created_at && new Date(e.created_at).getTime() >= dayAgo).length;
+    if (currentView === "dashboard") renderStatRow();
+
     if (newCritical) notifyCritical(newCritical);
   } catch (e) {
     // Transient errors shouldn't break other views.
@@ -757,7 +901,7 @@ function renderAlertsBadge() {
 }
 
 function eventCameraLabel(camId) {
-  return cameras.find((c) => c.id === camId)?.name || "Unknown camera";
+  return cameras.find((c) => c.id === camId)?.name || "Unknown source";
 }
 
 function renderEvents() {
@@ -792,9 +936,7 @@ function renderEvents() {
 
 /* ---------- events: charts ---------- */
 // Categorical hues validated (dataviz skill's validate_palette.js) against
-// this app's actual card surface (#131926) in dark mode — worst adjacent
-// CVD ΔE 8.4, worst normal-vision ΔE 19.3, all >=3:1 contrast. Every bar
-// also carries a direct text label, so identity never rests on color alone.
+// this app's actual card surface (#12141d) in dark mode.
 const CAMERA_CHART_COLORS = [
   "#3987e5", "#d95926", "#199e70", "#c98500",
   "#d55181", "#008300", "#9085e9", "#e66767",
@@ -819,8 +961,6 @@ function renderEventCharts() {
     return;
   }
 
-  // Severity carries the app's existing status colors (same as the list
-  // rows below) - critical/warning/info, never reused for camera identity.
   const severityCounts = { critical: 0, warning: 0, info: 0 };
   for (const e of latestEvents) {
     if (severityCounts[e.severity] !== undefined) severityCounts[e.severity]++;
@@ -850,7 +990,7 @@ function renderEventCharts() {
   const cameraCard = document.createElement("div");
   cameraCard.className = "chart-card";
   cameraCard.innerHTML = `
-    <div class="chart-card-title">Events by camera</div>
+    <div class="chart-card-title">Events by source</div>
     <div class="chart-bars">
       ${sortedCams
         .map(([camId, count], i) =>
@@ -912,7 +1052,7 @@ function playAlertSound() {
 
 function populateCameraSelects() {
   const optionsHtml =
-    `<option value="">All cameras</option>` +
+    `<option value="">All sources</option>` +
     cameras.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
   const camFilterVal = el.eventsCameraFilter.value;
   const ruleCamVal = el.alertRuleCamera.value;
@@ -942,7 +1082,7 @@ function renderAlertRulesList() {
   for (const rule of alertRules) {
     const row = document.createElement("div");
     row.className = "alert-rule-row" + (rule.enabled ? "" : " disabled");
-    const camLabel = rule.camera_id ? eventCameraLabel(rule.camera_id) : "All cameras";
+    const camLabel = rule.camera_id ? eventCameraLabel(rule.camera_id) : "All sources";
     row.innerHTML = `
       <span class="alert-rule-target">"${escapeHtml(rule.target)}"</span>
       <span class="alert-rule-camera">${escapeHtml(camLabel)}</span>
@@ -1003,6 +1143,14 @@ function escapeHtml(str) {
 loadCameras();
 loadPrompts();
 renderChat();
+renderRecentQueries();
+renderStatRow();
 loadChatHistory();
 pollRecentEvents();
-loadAlertRules();
+
+// Deep-linkable views, e.g. sentinelvision/?view=alerts — lets a specific
+// page be bookmarked or shared instead of always landing on Search.
+const deepLinkView = new URLSearchParams(location.search).get("view");
+if (deepLinkView && VIEW_TITLES[deepLinkView]) {
+  switchView(deepLinkView);
+}
