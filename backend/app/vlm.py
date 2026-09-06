@@ -148,6 +148,15 @@ class VisionLanguageModel:
                 image_inputs, video_inputs, video_kwargs = process_vision_info(
                     messages, return_video_kwargs=True
                 )
+                # qwen_vl_utils returns some entries (e.g. "fps") as one
+                # value per video, since it supports multiple videos in one
+                # call — this transformers version's processor validates
+                # them as bare scalars instead. We only ever send one video
+                # per call here, so unwrapping is always correct.
+                video_kwargs = {
+                    k: (v[0] if isinstance(v, list) and len(v) == 1 else v)
+                    for k, v in video_kwargs.items()
+                }
                 inputs = self._processor(
                     text=[text],
                     images=image_inputs,
