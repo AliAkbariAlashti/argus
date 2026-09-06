@@ -113,7 +113,20 @@ class VisionLanguageModel:
                 )
 
         if as_video:
-            visual_content = [{"type": "video", "video": images, "fps": fps}]
+            # qwen_vl_utils resizes video frames against its own internal
+            # defaults, separate from the processor's min_pixels/max_pixels
+            # (those only govern the plain-"image" path) — without pinning
+            # them here explicitly, video frames can end up larger than the
+            # budget the rest of the app assumes.
+            visual_content = [
+                {
+                    "type": "video",
+                    "video": images,
+                    "fps": fps,
+                    "min_pixels": VLM_MIN_PIXELS,
+                    "max_pixels": VLM_MAX_PIXELS,
+                }
+            ]
         else:
             visual_content = [{"type": "image", "image": img} for img in images]
 
@@ -152,13 +165,25 @@ class VisionLanguageModel:
                 )
             inputs = inputs.to(self._model.device)
 
-            generated = self._model.generate(**inputs, max_new_tokens=max_new_tokens)
-            trimmed = [
-                out[len(inp):] for inp, out in zip(inputs.input_ids, generated)
-            ]
-            result = self._processor.batch_decode(
-                trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )
+            try:
+                generated = self._model.generate(**inputs, max_new_tokens=max_new_tokens)
+                trimmed = [
+                    out[len(inp):] for inp, out in zip(inputs.input_ids, generated)
+                ]
+                result = self._processor.batch_decode(
+                    trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )
+            finally:
+                # This box idles with well under 1GB of VRAM headroom, so
+                # PyTorch's caching allocator holding reserved-but-unused
+                # blocks between requests (visible as "reserved by PyTorch
+                # but unallocated" in an OOM message) is enough on its own to
+                # push the next request over the edge. Runs on failure too,
+                # so one OOM doesn't leave the process worse off for the
+                # next request.
+                import torch
+
+                torch.cuda.empty_cache()
         return result[0].strip()
 
 

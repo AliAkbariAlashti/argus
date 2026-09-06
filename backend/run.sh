@@ -20,6 +20,13 @@ if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   exit 1
 fi
 
+# Reduces CUDA allocator fragmentation ("reserved by PyTorch but
+# unallocated" in an OOM message) — this box runs with well under 1GB of
+# VRAM headroom once the model is loaded, so fragmentation alone can OOM a
+# request that would otherwise fit. Must be set before the process starts;
+# setting it after Python/CUDA init has no effect.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
 nohup uvicorn app.main:app \
   --app-dir backend \
   --host 0.0.0.0 \
