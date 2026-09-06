@@ -28,6 +28,7 @@ from .db import Base, engine, get_db
 from .grounding import (
     build_fleet_prompt,
     build_grounded_prompt,
+    extract_primary_cameras,
     metadata_answer,
     route_question,
 )
@@ -408,25 +409,6 @@ def _frame_sequence_to_images(cam_id: str, count: int):
     return [frame_to_pil(f) for f in feed.get_frame_sequence(count)]
 
 
-def _primary_camera_index(answer: str, cameras: list[Camera]) -> int:
-    """Which camera a fleet answer is primarily about, for the snapshot
-    thumbnail — the camera whose name appears earliest in the answer text,
-    or the first camera if none is named. Fleet answers are prompted to
-    always name the relevant camera(s) (see build_fleet_prompt), so this
-    matches the thumbnail to what the text actually says instead of always
-    showing whichever camera happened to be first by creation order."""
-    answer_lower = answer.lower()
-    best_idx, best_pos = 0, None
-    for i, cam in enumerate(cameras):
-        name = (cam.name or "").lower().strip()
-        if not name:
-            continue
-        pos = answer_lower.find(name)
-        if pos != -1 and (best_pos is None or pos < best_pos):
-            best_idx, best_pos = i, pos
-    return best_idx
-
-
 def _recent_history(db: Session) -> list[dict]:
     """Prior turns, oldest first, for replay as model context."""
     rows = (
@@ -516,13 +498,23 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
 
         prompt = build_fleet_prompt(used_cameras, req.question)
         try:
-            answer = vlm.ask(images, prompt, history=history, max_new_tokens=768)
+            raw_answer = vlm.ask(images, prompt, history=history, max_new_tokens=768)
         except Exception as exc:  # noqa: BLE001
             log.exception("Fleet inference failed")
             raise HTTPException(status_code=500, detail=str(exc))
 
+        # The model names which camera(s) its answer is actually about via a
+        # trailing [[cameras: ...]] tag (see build_fleet_prompt) instead of
+        # us guessing from where a name happens to appear in the prose — a
+        # well-behaved answer also names the clear cameras, which broke that
+        # heuristic. Falls back to the first camera if the tag is missing,
+        # unparseable, or names nothing we recognize.
+        answer, primary_cameras = extract_primary_cameras(raw_answer, used_cameras)
+        snapshot_camera = primary_cameras[0] if primary_cameras else used_cameras[0]
+        snapshot_index = used_cameras.index(snapshot_camera)
+
         used = [c.id for c in used_cameras]
-        snapshot = image_to_data_uri(images[_primary_camera_index(answer, used_cameras)])
+        snapshot = image_to_data_uri(images[snapshot_index])
         _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
         return {
             "question": req.question,

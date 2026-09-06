@@ -299,9 +299,39 @@ def build_fleet_prompt(cameras: list, question: str) -> str:
         "and briefly note the cameras where it is absent.\n"
         "- If it appears on no camera, say so plainly.\n"
         "- Be specific and concise. Do not describe cameras that are not "
-        "relevant to the question.\n\n"
+        "relevant to the question.\n"
+        "- End your reply with a final line naming ONLY the camera(s) your "
+        "answer is actually about (the ones with the relevant finding, not "
+        "ones you only mentioned as clear), in exactly this format and "
+        "nothing else on that line: [[cameras: Name One, Name Two]]. Use "
+        "the exact camera names from the list above. If the finding is on "
+        "no camera, write [[cameras: none]].\n\n"
         f"Question: {question}"
     )
+
+
+_CAMERA_TAG_RE = re.compile(r"\[\[cameras:\s*(.*?)\s*\]\]\s*$", re.IGNORECASE | re.DOTALL)
+
+
+def extract_primary_cameras(answer: str, cameras: list) -> tuple[str, list]:
+    """Splits the model's trailing [[cameras: ...]] tag off a fleet answer
+    and resolves it against the actual camera list by name.
+
+    Returns (display_text, matched_cameras) — display_text has the tag
+    stripped (never shown to the user), and matched_cameras is empty if the
+    tag is missing, unparseable, or names no real camera (the caller should
+    fall back to some other default, e.g. the first camera, in that case)."""
+    match = _CAMERA_TAG_RE.search(answer)
+    if not match:
+        return answer, []
+
+    display_text = answer[: match.start()].rstrip()
+    if match.group(1).strip().lower() == "none":
+        return display_text, []
+
+    named = [n.strip().lower() for n in match.group(1).split(",") if n.strip()]
+    matched = [c for c in cameras if (c.name or "").strip().lower() in named]
+    return display_text, matched
 
 
 def build_event_prompt(camera, watch_for: list[str] | None = None) -> str:

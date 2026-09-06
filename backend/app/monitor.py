@@ -179,8 +179,19 @@ class EventMonitor:
 
         prev_raw = self._pending.get(cam.id)
         self._pending[cam.id] = new_raw
-        if prev_raw is None or new_raw != prev_raw:
-            return  # not held for two consecutive readings yet - not confirmed
+
+        # Compare only keys seen on both the previous and current reading:
+        # the rule set can change between ticks (a rule added/edited/
+        # toggled/deleted), which changes new_raw's key shape even though
+        # nothing about the scene changed. Comparing full dicts would treat
+        # that as "not confirmed yet" and delay every alert by an extra tick
+        # whenever a rule is touched.
+        prev_keys = prev_raw.keys() if prev_raw is not None else set()
+        common_keys = new_raw.keys() & prev_keys
+        new_keys = new_raw.keys() - prev_keys
+
+        if prev_raw is None or any(new_raw[k] != prev_raw[k] for k in common_keys):
+            return  # not held steady across two consecutive readings yet
 
         summary = str(parsed.get("summary") or "").strip()
         confirmed = self._confirmed.get(cam.id, {})
@@ -188,6 +199,11 @@ class EventMonitor:
         snapshot = None  # built lazily - only if something is actually logged
 
         for key, value in new_raw.items():
+            if key in new_keys:
+                # This key (almost always a just-added/enabled rule) has no
+                # prior reading of its own yet — seed it below instead of
+                # logging off a single, undebounced sample.
+                continue
             if confirmed.get(key, False) == value:
                 continue
             label = self._transition_label(key, value, rules_by_id)
@@ -198,6 +214,10 @@ class EventMonitor:
                 snapshot = image_to_data_uri(img)
             self._log_event(db, cam, severity, category, summary, snapshot)
 
+        # new_raw already carries every key (built-ins + all currently
+        # enabled rules) at its current value, so this seeds new_keys at
+        # their real reading rather than a spurious False, without a
+        # separate merge step.
         self._confirmed[cam.id] = new_raw
 
     def _transition_label(self, key: str, value: bool, rules_by_id: dict):
