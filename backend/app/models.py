@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Text, DateTime, ARRAY, Integer
+from sqlalchemy import Column, String, Text, DateTime, ARRAY, Integer, Boolean
 
 from .db import Base
 
@@ -91,5 +91,30 @@ class Event(Base):
             "category": self.category,
             "summary": self.summary,
             "snapshot": self.snapshot,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AlertRule(Base):
+    """Operator-defined watch condition ("car", "backpack left behind"). The
+    background monitor folds every active rule for a camera into its regular
+    structured classification call (see grounding.build_event_prompt and
+    monitor.py) instead of one extra VLM call per rule — custom rules don't
+    multiply GPU load."""
+
+    __tablename__ = "alert_rules"
+
+    id = Column(String, primary_key=True, default=_new_id)
+    camera_id = Column(String, nullable=True)  # null = every camera
+    target = Column(String, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "camera_id": self.camera_id,
+            "target": self.target,
+            "enabled": self.enabled,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

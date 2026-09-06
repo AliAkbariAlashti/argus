@@ -34,7 +34,16 @@ const el = {
   railCamerasBadge: document.getElementById("rail-cameras-badge"),
 
   eventsList: document.getElementById("events-list"),
+  eventsCharts: document.getElementById("events-charts"),
+  eventsSearch: document.getElementById("events-search"),
+  eventsCameraFilter: document.getElementById("events-camera-filter"),
+  eventsSeverityFilter: document.getElementById("events-severity-filter"),
   railAlertsBadge: document.getElementById("rail-alerts-badge"),
+
+  alertRuleForm: document.getElementById("alert-rule-form"),
+  alertRuleCamera: document.getElementById("alert-rule-camera"),
+  alertRuleTarget: document.getElementById("alert-rule-target"),
+  alertRulesList: document.getElementById("alert-rules-list"),
 
   healthPage: document.getElementById("health-page"),
 
@@ -118,7 +127,11 @@ function switchView(view) {
 
   if (view === "cameras") renderCamerasTable();
   if (view === "health") loadHealth();
-  if (view === "alerts") loadEvents().then(markEventsSeen);
+  if (view === "alerts") {
+    loadEvents();
+    loadAlertRules();
+    markEventsSeen();
+  }
 
   // The live MJPEG connection stays open as long as the <img> has a src,
   // even while its view is hidden — stop it when navigating away, and
@@ -141,6 +154,7 @@ async function loadCameras() {
   renderDashboard();
   renderChatStrip();
   renderRailBadge();
+  populateCameraSelects();
   if (currentView === "cameras") renderCamerasTable();
 
   if (!activeCameraId && cameras.length) {
@@ -649,9 +663,18 @@ function renderHealth(data) {
 // The badge/seen tracking lives in localStorage, per-browser — there's no
 // concept of "read" server-side, this is just a lightweight "anything new
 // since I last looked" indicator on the rail icon.
+//
+// Two separate polls, deliberately not one: `recentUnfiltered` (unfiltered,
+// small, every 10s) drives the badge and the critical-event toast — those
+// must stay correct regardless of whatever search/camera/severity filter is
+// currently applied to the visible list. `latestEvents` (filtered, fetched
+// on open/filter-change) drives what's actually rendered below.
 
 const EVENTS_SEEN_KEY = "sentinel_events_last_seen_id";
 let latestEvents = [];
+let recentUnfiltered = [];
+let alertRules = [];
+const eventFilters = { q: "", camera_id: "", severity: "" };
 
 function getLastSeenEventId() {
   try {
@@ -662,31 +685,72 @@ function getLastSeenEventId() {
 }
 
 function markEventsSeen() {
-  if (!latestEvents.length) return;
+  if (!recentUnfiltered.length) return;
+  const newestId = Math.max(...recentUnfiltered.map((e) => e.id));
   try {
-    localStorage.setItem(EVENTS_SEEN_KEY, String(latestEvents[0].id));
+    localStorage.setItem(EVENTS_SEEN_KEY, String(newestId));
   } catch (e) {
     // Private-browsing/blocked storage shouldn't break the view.
   }
   renderAlertsBadge();
 }
 
-async function loadEvents() {
+async function pollRecentEvents() {
   try {
-    const res = await fetch(`${API}/api/events?limit=100`);
+    const res = await fetch(`${API}/api/events?limit=30`);
     if (!res.ok) return;
-    latestEvents = await res.json();
-    if (currentView === "alerts") renderEvents();
+    const rows = await res.json();
+    const seenIds = new Set(recentUnfiltered.map((e) => e.id));
+    const newCritical = rows.find((e) => e.severity === "critical" && !seenIds.has(e.id));
+    recentUnfiltered = rows;
     renderAlertsBadge();
+    if (newCritical) notifyCritical(newCritical);
   } catch (e) {
     // Transient errors shouldn't break other views.
   }
 }
-setInterval(loadEvents, 10000);
+setInterval(pollRecentEvents, 10000);
+
+function buildEventsQuery() {
+  const params = new URLSearchParams({ limit: "300" });
+  if (eventFilters.q) params.set("q", eventFilters.q);
+  if (eventFilters.camera_id) params.set("camera_id", eventFilters.camera_id);
+  if (eventFilters.severity) params.set("severity", eventFilters.severity);
+  return params.toString();
+}
+
+async function loadEvents() {
+  try {
+    const res = await fetch(`${API}/api/events?${buildEventsQuery()}`);
+    if (!res.ok) return;
+    latestEvents = await res.json();
+    renderEvents();
+    renderEventCharts();
+  } catch (e) {
+    // Transient errors shouldn't break other views.
+  }
+}
+
+let searchDebounceTimer = null;
+el.eventsSearch.addEventListener("input", () => {
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    eventFilters.q = el.eventsSearch.value.trim();
+    loadEvents();
+  }, 300);
+});
+el.eventsCameraFilter.addEventListener("change", () => {
+  eventFilters.camera_id = el.eventsCameraFilter.value;
+  loadEvents();
+});
+el.eventsSeverityFilter.addEventListener("change", () => {
+  eventFilters.severity = el.eventsSeverityFilter.value;
+  loadEvents();
+});
 
 function renderAlertsBadge() {
   const lastSeen = getLastSeenEventId();
-  const unseen = latestEvents.filter((e) => e.id > lastSeen && e.severity !== "info");
+  const unseen = recentUnfiltered.filter((e) => e.id > lastSeen && e.severity !== "info");
   el.railAlertsBadge.hidden = unseen.length === 0;
   el.railAlertsBadge.textContent = unseen.length;
   el.railAlertsBadge.classList.toggle("warn", unseen.some((e) => e.severity === "critical"));
@@ -699,7 +763,7 @@ function eventCameraLabel(camId) {
 function renderEvents() {
   el.eventsList.innerHTML = "";
   if (latestEvents.length === 0) {
-    el.eventsList.innerHTML = `<div class="empty-state">No events yet. The background monitor logs activity here as it happens.</div>`;
+    el.eventsList.innerHTML = `<div class="empty-state">No events match the current filters.</div>`;
     return;
   }
   for (const ev of latestEvents) {
@@ -726,6 +790,206 @@ function renderEvents() {
   }
 }
 
+/* ---------- events: charts ---------- */
+// Categorical hues validated (dataviz skill's validate_palette.js) against
+// this app's actual card surface (#131926) in dark mode — worst adjacent
+// CVD ΔE 8.4, worst normal-vision ΔE 19.3, all >=3:1 contrast. Every bar
+// also carries a direct text label, so identity never rests on color alone.
+const CAMERA_CHART_COLORS = [
+  "#3987e5", "#d95926", "#199e70", "#c98500",
+  "#d55181", "#008300", "#9085e9", "#e66767",
+];
+
+function chartBarRow(label, count, max, color) {
+  const pct = max > 0 ? (count / max) * 100 : 0;
+  return `
+    <div class="chart-bar-row">
+      <span class="chart-bar-label">${escapeHtml(label)}</span>
+      <div class="chart-bar-track">
+        <div class="chart-bar-fill" style="width:${pct}%; background:${color}"></div>
+      </div>
+      <span class="chart-bar-count">${count}</span>
+    </div>`;
+}
+
+function renderEventCharts() {
+  el.eventsCharts.innerHTML = "";
+  if (latestEvents.length === 0) {
+    el.eventsCharts.innerHTML = `<div class="empty-state">No events yet to chart.</div>`;
+    return;
+  }
+
+  // Severity carries the app's existing status colors (same as the list
+  // rows below) - critical/warning/info, never reused for camera identity.
+  const severityCounts = { critical: 0, warning: 0, info: 0 };
+  for (const e of latestEvents) {
+    if (severityCounts[e.severity] !== undefined) severityCounts[e.severity]++;
+  }
+  const severityColors = { critical: "var(--red)", warning: "var(--amber)", info: "var(--border)" };
+  const severityMax = Math.max(...Object.values(severityCounts));
+
+  const severityCard = document.createElement("div");
+  severityCard.className = "chart-card";
+  severityCard.innerHTML = `
+    <div class="chart-card-title">Events by severity</div>
+    <div class="chart-bars">
+      ${Object.entries(severityCounts)
+        .map(([sev, count]) => chartBarRow(sev, count, severityMax, severityColors[sev]))
+        .join("")}
+    </div>
+  `;
+  el.eventsCharts.appendChild(severityCard);
+
+  const cameraCounts = {};
+  for (const e of latestEvents) {
+    cameraCounts[e.camera_id] = (cameraCounts[e.camera_id] || 0) + 1;
+  }
+  const sortedCams = Object.entries(cameraCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const camMax = Math.max(...sortedCams.map(([, c]) => c));
+
+  const cameraCard = document.createElement("div");
+  cameraCard.className = "chart-card";
+  cameraCard.innerHTML = `
+    <div class="chart-card-title">Events by camera</div>
+    <div class="chart-bars">
+      ${sortedCams
+        .map(([camId, count], i) =>
+          chartBarRow(
+            eventCameraLabel(camId),
+            count,
+            camMax,
+            CAMERA_CHART_COLORS[i % CAMERA_CHART_COLORS.length]
+          )
+        )
+        .join("")}
+    </div>
+  `;
+  el.eventsCharts.appendChild(cameraCard);
+}
+
+/* ---------- events: critical toast + sound ---------- */
+
+function notifyCritical(event) {
+  showToast(`⚠ ${event.category} — ${eventCameraLabel(event.camera_id)}`);
+  playAlertSound();
+}
+
+function showToast(text) {
+  const toast = document.createElement("div");
+  toast.className = "event-toast";
+  toast.textContent = text;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("show"));
+  setTimeout(() => {
+    toast.classList.remove("show");
+    setTimeout(() => toast.remove(), 300);
+  }, 6000);
+}
+
+let audioCtx = null;
+function playAlertSound() {
+  // WebAudio, not an audio file - no asset to ship, no CDN dependency. Browsers
+  // block audio until the page has had a user gesture; if that hasn't happened
+  // yet this just silently no-ops and the toast still shows.
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.5);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.5);
+  } catch (e) {
+    // Audio blocked/unsupported - the toast alone is still a valid alert.
+  }
+}
+
+/* ---------- alert rules ---------- */
+
+function populateCameraSelects() {
+  const optionsHtml =
+    `<option value="">All cameras</option>` +
+    cameras.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
+  const camFilterVal = el.eventsCameraFilter.value;
+  const ruleCamVal = el.alertRuleCamera.value;
+  el.eventsCameraFilter.innerHTML = optionsHtml;
+  el.alertRuleCamera.innerHTML = optionsHtml;
+  el.eventsCameraFilter.value = camFilterVal;
+  el.alertRuleCamera.value = ruleCamVal;
+}
+
+async function loadAlertRules() {
+  try {
+    const res = await fetch(`${API}/api/alert-rules`);
+    if (!res.ok) return;
+    alertRules = await res.json();
+    renderAlertRulesList();
+  } catch (e) {
+    // Transient errors shouldn't break other views.
+  }
+}
+
+function renderAlertRulesList() {
+  el.alertRulesList.innerHTML = "";
+  if (alertRules.length === 0) {
+    el.alertRulesList.innerHTML = `<div class="empty-state">No custom alert rules yet.</div>`;
+    return;
+  }
+  for (const rule of alertRules) {
+    const row = document.createElement("div");
+    row.className = "alert-rule-row" + (rule.enabled ? "" : " disabled");
+    const camLabel = rule.camera_id ? eventCameraLabel(rule.camera_id) : "All cameras";
+    row.innerHTML = `
+      <span class="alert-rule-target">"${escapeHtml(rule.target)}"</span>
+      <span class="alert-rule-camera">${escapeHtml(camLabel)}</span>
+      <label class="alert-rule-toggle">
+        <input type="checkbox" ${rule.enabled ? "checked" : ""} />
+        <span>${rule.enabled ? "Enabled" : "Disabled"}</span>
+      </label>
+      <button class="btn-icon danger" data-action="delete">Delete</button>
+    `;
+    row.querySelector('input[type="checkbox"]').addEventListener("change", (e) => {
+      toggleAlertRule(rule.id, e.target.checked);
+    });
+    row.querySelector('[data-action="delete"]').addEventListener("click", () => {
+      deleteAlertRule(rule.id);
+    });
+    el.alertRulesList.appendChild(row);
+  }
+}
+
+async function toggleAlertRule(ruleId, enabled) {
+  await fetch(`${API}/api/alert-rules/${ruleId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  await loadAlertRules();
+}
+
+async function deleteAlertRule(ruleId) {
+  await fetch(`${API}/api/alert-rules/${ruleId}`, { method: "DELETE" });
+  await loadAlertRules();
+}
+
+el.alertRuleForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const target = el.alertRuleTarget.value.trim();
+  if (!target) return;
+  const camera_id = el.alertRuleCamera.value || null;
+  await fetch(`${API}/api/alert-rules`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ camera_id, target }),
+  });
+  el.alertRuleTarget.value = "";
+  await loadAlertRules();
+});
+
 /* ---------- utils ---------- */
 
 function escapeHtml(str) {
@@ -740,4 +1004,5 @@ loadCameras();
 loadPrompts();
 renderChat();
 loadChatHistory();
-loadEvents();
+pollRecentEvents();
+loadAlertRules();

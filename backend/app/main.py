@@ -32,7 +32,7 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import Camera, ChatMessage, Event
+from .models import AlertRule, Camera, ChatMessage, Event
 from .monitor import monitor
 from .vlm import vlm
 
@@ -267,6 +267,7 @@ def list_events(
     limit: int = 100,
     camera_id: Optional[str] = None,
     severity: Optional[str] = None,
+    q: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Event).order_by(Event.id.desc())
@@ -274,8 +275,61 @@ def list_events(
         query = query.filter(Event.camera_id == camera_id)
     if severity:
         query = query.filter(Event.severity == severity)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(Event.summary.ilike(like) | Event.category.ilike(like))
     rows = query.limit(min(limit, 500)).all()
     return [r.to_dict() for r in rows]
+
+
+# ---------- Alert rules ----------
+
+
+class AlertRuleCreate(BaseModel):
+    camera_id: Optional[str] = None
+    target: str
+
+
+class AlertRuleUpdate(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/alert-rules")
+def list_alert_rules(db: Session = Depends(get_db)):
+    return [r.to_dict() for r in db.query(AlertRule).order_by(AlertRule.created_at).all()]
+
+
+@app.post("/api/alert-rules")
+def create_alert_rule(payload: AlertRuleCreate, db: Session = Depends(get_db)):
+    target = payload.target.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="A target phrase is required.")
+    rule = AlertRule(camera_id=payload.camera_id or None, target=target)
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return rule.to_dict()
+
+
+@app.put("/api/alert-rules/{rule_id}")
+def update_alert_rule(rule_id: str, payload: AlertRuleUpdate, db: Session = Depends(get_db)):
+    rule = db.get(AlertRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Alert rule not found")
+    rule.enabled = payload.enabled
+    db.commit()
+    db.refresh(rule)
+    return rule.to_dict()
+
+
+@app.delete("/api/alert-rules/{rule_id}")
+def delete_alert_rule(rule_id: str, db: Session = Depends(get_db)):
+    rule = db.get(AlertRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Alert rule not found")
+    db.delete(rule)
+    db.commit()
+    return {"deleted": rule_id}
 
 
 # ---------- Streaming ----------

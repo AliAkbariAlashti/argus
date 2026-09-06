@@ -115,13 +115,44 @@
         </div>
       </section>
 
-      <!-- ============ ALERTS (event log) ============ -->
+      <!-- ============ ALERTS (event dashboard) ============ -->
       <section class="view" id="view-alerts" hidden>
         <div class="events-page">
           <div class="events-header">
             <span>Event log</span>
             <span class="events-sub">Automatic detections from the background monitor — not user questions.</span>
           </div>
+
+          <div class="events-charts" id="events-charts"></div>
+
+          <div class="events-toolbar">
+            <input type="text" id="events-search" class="events-search" placeholder="Search events…" />
+            <select id="events-camera-filter" class="events-select">
+              <option value="">All cameras</option>
+            </select>
+            <select id="events-severity-filter" class="events-select">
+              <option value="">All severities</option>
+              <option value="critical">Critical</option>
+              <option value="warning">Warning</option>
+              <option value="info">Info</option>
+            </select>
+          </div>
+
+          <div class="alert-rules-panel">
+            <div class="alert-rules-header">
+              <span>Alert rules</span>
+              <span class="events-sub">Tell the monitor what to specifically watch for, per camera or across the fleet.</span>
+            </div>
+            <form id="alert-rule-form" class="alert-rule-form">
+              <select id="alert-rule-camera" class="events-select">
+                <option value="">All cameras</option>
+              </select>
+              <input type="text" id="alert-rule-target" placeholder='e.g. &quot;car&quot;, &quot;backpack left behind&quot;' required />
+              <button type="submit" class="btn-primary">Add rule</button>
+            </form>
+            <div class="alert-rules-list" id="alert-rules-list"></div>
+          </div>
+
           <div class="events-list" id="events-list"></div>
         </div>
       </section>

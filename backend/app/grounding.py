@@ -304,22 +304,37 @@ def build_fleet_prompt(cameras: list, question: str) -> str:
     )
 
 
-def build_event_prompt(camera) -> str:
+def build_event_prompt(camera, watch_for: list[str] | None = None) -> str:
     """Structured classification prompt for the background monitor — JSON,
     not prose, so the caller can act on booleans instead of parsing natural
     language. Kept intentionally narrow (person/vehicle/weapon) rather than
     open-ended, since this runs unattended on a timer, not in response to a
-    specific user question."""
+    specific user question.
+
+    `watch_for` folds an operator's custom alert-rule targets for this
+    camera into this same call, instead of one extra VLM call per rule."""
+    watch_block = ""
+    if watch_for:
+        quoted = ", ".join(f'"{w}"' for w in watch_for)
+        watch_block = (
+            "\nAlso specifically check for these operator-defined "
+            f"conditions: {quoted}. List, in \"custom_matches\", exactly "
+            "which of these strings (verbatim, from the list above) are "
+            "currently visibly true in the frame — empty list if none "
+            "apply.\n"
+        )
     return (
         f"You are a CCTV monitoring analyst reviewing camera \"{camera.name}\" "
         f"at {camera.location}.\n"
         "Respond with ONLY a single JSON object, no other text, in exactly "
         "this shape:\n"
         '{"person_present": bool, "vehicle_present": bool, '
-        '"weapon_visible": bool, "summary": "one short sentence"}\n'
+        '"weapon_visible": bool, "custom_matches": [string], '
+        '"summary": "one short sentence"}\n'
         "\"weapon_visible\" means a firearm, knife, or other weapon is "
         "clearly visible — leave it false unless you are reasonably "
         "confident, since this is what triggers a real alert."
+        f"{watch_block}"
     )
 
 
