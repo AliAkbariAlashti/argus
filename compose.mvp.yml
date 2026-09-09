@@ -5,14 +5,27 @@ services:
       dockerfile: backend/Dockerfile
     ports:
       - "127.0.0.1:${ARGUS_PORT:-8090}:8000"
+    extra_hosts:
+      - "host.docker.internal:${ARGUS_DOCKER_HOST_IP:-172.28.0.1}"
     environment:
       DATABASE_URL: postgresql+psycopg://argus:argus-local@db:5432/argus
+      ARGUS_OLLAMA_RELAY_PORT: 11435
     volumes:
       - argus_settings:/app/backend/data
       - argus_videos:/app/videos
     depends_on:
       db:
         condition: service_healthy
+      ollama-relay:
+        condition: service_started
+    restart: unless-stopped
+  ollama-relay:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.relay
+    network_mode: host
+    environment:
+      ARGUS_OLLAMA_RELAY_BIND: ${ARGUS_DOCKER_HOST_IP:-172.28.0.1}
     restart: unless-stopped
   db:
     image: postgres:16-alpine

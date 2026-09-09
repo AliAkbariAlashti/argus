@@ -171,16 +171,16 @@
 
       <section id="ollama">
         <h2>Ollama</h2>
-        <p><a class="quiet" href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> is the fastest way to
-        run a local, CPU-or-GPU vision model behind an OpenAI-compatible API.</p>
+        <p><a class="quiet" href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> runs a local vision
+        model on CPU or GPU. Argus uses Ollama's native vision endpoint for reliable image requests.</p>
         <h3>1. Install Ollama</h3>
         <pre><code># macOS / Linux
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Windows: download the installer from ollama.com</code></pre>
         <h3>2. Pull a vision-capable model</h3>
-        <pre><code>ollama pull gemma3:4b
-# or: llava, llama3.2-vision, qwen2.5vl (any tag Ollama lists as vision-capable)</code></pre>
+        <pre><code>ollama pull moondream
+# or: gemma3:4b, llava, llama3.2-vision, qwen2.5vl</code></pre>
         <h3>3. Point Argus at it</h3>
         <p>In <strong>AI setup</strong>, choose <em>Local or hosted vision API</em> and click the <strong>Ollama
         preset</strong> button, or enter manually:</p>
@@ -193,8 +193,11 @@ curl -fsSL https://ollama.com/install.sh | sh
         <p class="note">If Ollama runs on a different machine than Argus, use that machine's address instead of
         <code>localhost</code>, and check "allow frames to be sent outside this machine".</p>
         <h3>4. Test the connection</h3>
-        <p>Click <strong>Test vision connection</strong>. A pass means the streaming <code>/chat/completions</code>
-        call with an image succeeded end to end. Restart Ollama or change models and you'll need to re-test.</p>
+        <p>Click <strong>Test vision connection</strong>. A pass means Argus reached Ollama and the selected model
+        identified a synthetic red image. Restart Ollama or change models and you'll need to re-test.</p>
+        <p class="note">When Argus runs with <code>compose.mvp.yml</code>, the Compose Ollama relay lets the app reach
+        an Ollama daemon bound to host loopback. The relay also requests CPU inference, which avoids Vulkan memory
+        failures on machines where Ollama detects an unusable GPU.</p>
       </section>
 
       <section id="llamacpp">

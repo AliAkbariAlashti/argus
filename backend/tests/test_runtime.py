@@ -9,7 +9,7 @@ from app.runtime import VisionRuntime
 
 
 def settings(**overrides):
-    return {"provider": "compatible", "base_url": "http://localhost:11434/v1", "model": "test-vision", "api_key": "test-secret", "allow_remote": False, "monitor_enabled": False, **overrides}
+    return {"provider": "compatible", "base_url": "http://localhost:8080/v1", "model": "test-vision", "api_key": "test-secret", "allow_remote": False, "monitor_enabled": False, **overrides}
 
 
 @pytest.fixture
@@ -69,6 +69,35 @@ def test_vision_probe_and_stream_preserve_images_and_tokens(runtime, monkeypatch
     assert "chronological" in requests[-1]["messages"][-1]["content"][-1]["text"]
     runtime.configure(settings())
     assert not runtime.ready
+
+
+def test_ollama_uses_native_cpu_api_and_container_host_alias(runtime, monkeypatch):
+    requests = []
+
+    def handler(req):
+        payload = json.loads(req.content)
+        requests.append((req.url.path, payload))
+        assert req.url.path == "/api/generate"
+        assert payload["options"]["num_gpu"] == 0
+        assert payload["images"]
+        assert len(payload["images"]) == 1
+        assert not payload["images"][0].startswith("data:")
+        if not payload["stream"]:
+            return httpx.Response(200, json={"response": "The image is red.", "done": True})
+        return httpx.Response(200, text='{"response":"red ","done":false}\n{"response":"image","done":true}\n')
+
+    mock_server(monkeypatch, handler)
+    monkeypatch.setattr("app.runtime.os.path.exists", lambda path: path == "/.dockerenv")
+    monkeypatch.setenv("ARGUS_OLLAMA_RELAY_PORT", "11435")
+    runtime.configure(settings(base_url="http://localhost:11434/v1", model="moondream:latest", api_key=""))
+    assert runtime._request_url(runtime._settings["base_url"]) == "http://host.docker.internal:11435/v1"
+    assert runtime.test()["ready"]
+    tokens = []
+    assert runtime.ask(Image.new("RGB", (16, 16)), "Describe", on_token=tokens.append) == "red image"
+    assert tokens == ["red ", "image"]
+    assert len(requests) == 2
+    assert runtime.ask([Image.new("RGB", (16, 16))] * 2, "Describe") == "The image is red."
+    assert len(requests) == 3
 
 
 def test_disconnect_is_not_a_complete_answer(runtime, monkeypatch):

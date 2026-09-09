@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from PIL import Image
@@ -117,7 +117,118 @@ class VisionRuntime:
                 self._error = str(exc)
                 raise
 
+    @staticmethod
+    def _is_ollama_url(base_url):
+        parsed = urlsplit(base_url)
+        return parsed.port == 11434 or parsed.hostname == "host.docker.internal"
+
+    def _is_moondream(self):
+        return self._settings.get("model", "").strip().lower().split(":", 1)[0] == "moondream"
+
+    @staticmethod
+    def _request_url(base_url):
+        parsed = urlsplit(base_url)
+        # The browser can use localhost for a local Ollama install, but a
+        # container's localhost is the container itself. compose.mvp.yml adds
+        # this Docker host alias on Linux; keep the saved URL unchanged so the
+        # same setup also works when Argus runs directly on the host.
+        if os.path.exists("/.dockerenv") and parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+            host = "host.docker.internal"
+            netloc = host
+            port = parsed.port
+            relay_port = os.environ.get("ARGUS_OLLAMA_RELAY_PORT")
+            if port == 11434 and relay_port:
+                port = int(relay_port)
+            if port:
+                netloc += f":{port}"
+            parsed = parsed._replace(netloc=netloc)
+        return urlunsplit(parsed).rstrip("/")
+
+    def _ollama_url(self, base_url):
+        return self._request_url(base_url).removesuffix("/v1") + "/api/generate"
+
+    def _ollama_prompt(self, question, history):
+        if self._is_moondream():
+            # Ollama's Moondream template supplies its own Question/Answer
+            # wrapper. Sending Argus's long grounded prompt verbatim nests a
+            # second Question marker and frequently makes the model emit EOS.
+            return question.rsplit("Question:", 1)[-1].strip()
+        turns = []
+        for turn in history or []:
+            role = turn.get("role")
+            text = (turn.get("text") or "").strip()
+            if role in ("user", "assistant") and text:
+                turns.append(f"{role.title()}: {text}")
+        return "\n".join(turns + [question])
+
+    def _ollama_ask(self, image, question, max_new_tokens, history=None, fps=None, on_token=None):
+        frames = image if isinstance(image, list) else [image]
+        if self._is_moondream() and len(frames) > 1:
+            # Moondream's 2K context is consumed almost entirely by one image
+            # at this thumbnail size. The latest frame is the useful current
+            # state; sending the whole motion buffer causes Ollama HTTP 400.
+            frames = [frames[-1]]
+            fps = None
+        if fps and len(frames) > 1:
+            question = f"These images are chronological samples, approximately {1 / fps:g} seconds apart. " + question
+        images = []
+        for frame in frames:
+            data_uri = image_to_data_uri(frame)
+            if not data_uri or "," not in data_uri:
+                raise RuntimeError("Could not prepare the image for Ollama.")
+            images.append(data_uri.split(",", 1)[1])
+        payload = {
+            "model": self._settings["model"],
+            "prompt": self._ollama_prompt(question, history[-2:] if self._is_moondream() and history else history),
+            "images": images,
+            "options": {"num_gpu": 0, "num_predict": max_new_tokens},
+            "stream": on_token is not None,
+        }
+        headers = {}
+        if self._settings.get("api_key"):
+            headers["Authorization"] = "Bearer " + self._settings["api_key"]
+        try:
+            with httpx.Client(timeout=httpx.Timeout(180, connect=10), follow_redirects=False) as client:
+                if on_token is None:
+                    res = client.post(self._ollama_url(self._settings["base_url"]), headers=headers, json=payload)
+                    res.raise_for_status()
+                    answer = res.json()["response"]
+                else:
+                    chunks = []
+                    completed = False
+                    with client.stream("POST", self._ollama_url(self._settings["base_url"]), headers=headers, json=payload) as res:
+                        res.raise_for_status()
+                        for line in res.iter_lines():
+                            if not line:
+                                continue
+                            packet = json.loads(line)
+                            if packet.get("error"):
+                                raise RuntimeError("The AI server reported a generation error.")
+                            chunk = packet.get("response") or ""
+                            if chunk:
+                                chunks.append(chunk)
+                                on_token(chunk)
+                            if packet.get("done"):
+                                completed = True
+                                break
+                    if not completed:
+                        raise RuntimeError("The AI server disconnected before finishing. Please retry.")
+                    answer = "".join(chunks)
+                if not isinstance(answer, str) or not answer.strip():
+                    raise RuntimeError("The AI server returned an empty answer. Check that the Ollama model can run vision inference on CPU.")
+                return answer.strip()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400 and "exceeds the available context size" in exc.response.text:
+                raise RuntimeError("The Ollama model context is too small for the selected frames. Moondream uses the latest frame automatically; retry the question.") from None
+            raise RuntimeError(f"AI server returned HTTP {exc.response.status_code}. Check the Ollama model and API address in AI setup.") from None
+        except httpx.RequestError:
+            raise RuntimeError("Cannot reach the AI server, or it timed out. Check AI setup and retry.") from None
+        except (KeyError, TypeError, json.JSONDecodeError):
+            raise RuntimeError("The Ollama server returned an unsupported response. Check the selected model.") from None
+
     def _remote_ask(self, image, question, max_new_tokens=512, history=None, fps=None, on_token=None):
+        if self._is_ollama_url(self._settings["base_url"]):
+            return self._ollama_ask(image, question, max_new_tokens, history, fps, on_token)
         settings = self._settings
         frames = image if isinstance(image, list) else [image]
         messages = [{"role": t["role"], "content": t["text"]} for t in (history or []) if t.get("role") in ("user", "assistant")]
@@ -130,7 +241,7 @@ class VisionRuntime:
         if settings.get("api_key"):
             headers["Authorization"] = "Bearer " + settings["api_key"]
         payload = {"model": settings["model"], "messages": messages, "max_tokens": max_new_tokens, "stream": on_token is not None}
-        url = settings["base_url"].rstrip("/") + "/chat/completions"
+        url = self._request_url(settings["base_url"]) + "/chat/completions"
         try:
             with httpx.Client(timeout=httpx.Timeout(120, connect=10), follow_redirects=False) as client:
                 if on_token is None:
