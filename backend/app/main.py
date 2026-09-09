@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .camera import registry
@@ -40,6 +41,7 @@ from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, ChatMessage, Event, CpuConfig
 from .monitor import monitor
 from .runtime import vlm
+from . import yolo
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("qwenvl.main")
@@ -66,8 +68,20 @@ async def _raise_threadpool_capacity():
     limiter.total_tokens = 200
 
 
+def _add_alert_rule_source_column():
+    # No migration tool in this project yet; create_all only adds missing
+    # tables, not columns on an already-existing one.
+    with engine.begin() as conn:
+        existing = {row[0] for row in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'alert_rules'"
+        ))}
+        if existing and "source" not in existing:
+            conn.execute(text("ALTER TABLE alert_rules ADD COLUMN source VARCHAR NOT NULL DEFAULT 'vlm'"))
+
+
 def _seed_and_start_cameras():
     Base.metadata.create_all(bind=engine)
+    _add_alert_rule_source_column()
     db = next(get_db())
     try:
         if db.query(Camera).count() == 0:
@@ -341,6 +355,7 @@ def cpu_snapshot(camera_id: str):
 
 class AlertRuleCreate(BaseModel):
     camera_id: Optional[str] = None
+    source: str = Field(default="vlm", pattern="^(vlm|cpu)$")
     target: str
 
 
@@ -353,12 +368,20 @@ def list_alert_rules(db: Session = Depends(get_db)):
     return [r.to_dict() for r in db.query(AlertRule).order_by(AlertRule.created_at).all()]
 
 
+@app.get("/api/alert-rules/cpu-classes")
+def alert_rule_cpu_classes():
+    """The fixed vocabulary CPU-sourced rules can match — YOLO's class list."""
+    return {"classes": yolo.CLASSES, "available": yolo.available()}
+
+
 @app.post("/api/alert-rules")
 def create_alert_rule(payload: AlertRuleCreate, db: Session = Depends(get_db)):
     target = payload.target.strip()
     if not target:
         raise HTTPException(status_code=400, detail="A target phrase is required.")
-    rule = AlertRule(camera_id=payload.camera_id or None, target=target)
+    if payload.source == "cpu" and target.lower() not in yolo.CLASSES:
+        raise HTTPException(status_code=400, detail=f'"{target}" is not one of the CPU object classes. Choose from the list.')
+    rule = AlertRule(camera_id=payload.camera_id or None, source=payload.source, target=target.lower() if payload.source == "cpu" else target)
     db.add(rule)
     db.commit()
     db.refresh(rule)

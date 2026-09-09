@@ -10,10 +10,11 @@ import cv2
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
+from . import yolo
 from .camera import registry
 from .db import SessionLocal
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import Camera, CpuConfig, Event
+from .models import AlertRule, Camera, CpuConfig, Event
 
 log = logging.getLogger("argus.cpu")
 
@@ -54,10 +55,12 @@ class CpuSettings(BaseModel):
     quality_alerts: bool = False
     face_alerts: bool = False
     people_alerts: bool = False
+    object_alerts: bool = False
     motion_threshold: float = Field(default=0.02, ge=0.001, le=0.8)
     cooldown_seconds: int = Field(default=30, ge=5, le=3600)
     dark_threshold: int = Field(default=25, ge=1, le=150)
     blur_threshold: float = Field(default=30, ge=1, le=1000)
+    object_confidence: float = Field(default=0.4, ge=0.1, le=0.95)
     area: WatchArea = Field(default_factory=WatchArea)
 
 
@@ -117,6 +120,13 @@ def measure(frame, previous, settings, run_detectors=False):
             "face_count": len(face_boxes), "face_boxes": face_boxes,
             "people_count": len(people_boxes), "people_boxes": people_boxes,
         })
+    if run_detectors and settings.object_alerts:
+        # Full-resolution frame, not the 320x180 downscale used above — YOLO
+        # needs real detail, and it isn't cheap enough to run every tick anyway.
+        objects = yolo.detect(frame, conf_threshold=settings.object_confidence)
+        result["objects"] = [
+            {"class": name, "confidence": conf, "box": box} for name, conf, box in objects
+        ]
     return result, blurred
 
 
@@ -134,6 +144,16 @@ def annotate(frame, result, settings):
             start, end = (int(x * width), int(y * height)), (int((x + w) * width) - 1, int((y + h) * height) - 1)
             cv2.rectangle(image, start, end, (0, 0, 0), 4)
             cv2.rectangle(image, start, end, (255, 255, 255), 1)
+    for obj in result.get("objects", []):
+        x, y, w, h = obj["box"]
+        start, end = (int(x * width), int(y * height)), (int((x + w) * width) - 1, int((y + h) * height) - 1)
+        cv2.rectangle(image, start, end, (0, 0, 0), 4)
+        cv2.rectangle(image, start, end, (255, 255, 255), 1)
+        label = f"{obj['class']} {obj['confidence']:.2f}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        label_start = (start[0], max(0, start[1] - th - 6))
+        cv2.rectangle(image, label_start, (start[0] + tw + 6, start[1]), (0, 0, 0), -1)
+        cv2.putText(image, label, (start[0] + 3, start[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
     return image
 
 
@@ -229,7 +249,7 @@ class CpuMonitor:
         result, gray = measure(frame, previous, settings, run_detectors=run_detectors)
         if not run_detectors and old and "result" in old:
             # Carry the last detector reading forward between the heavier detection ticks.
-            for key in ("face_count", "face_boxes", "people_count", "people_boxes"):
+            for key in ("face_count", "face_boxes", "people_count", "people_boxes", "objects"):
                 if key in old["result"]:
                     result[key] = old["result"][key]
         streaks = dict(old["streaks"]) if old else {}
@@ -245,6 +265,17 @@ class CpuMonitor:
         if run_detectors:
             checks.append(("face", settings.face_alerts, result.get("face_count", 0) > 0, "CPU · Face detected"))
             checks.append(("people", settings.people_alerts, result.get("people_count", 0) > 0, "CPU · Person detected"))
+        if run_detectors and settings.object_alerts:
+            detected_classes = {obj["class"] for obj in result.get("objects", [])}
+            rules = (
+                db.query(AlertRule)
+                .filter(AlertRule.enabled.is_(True), AlertRule.source == "cpu")
+                .filter((AlertRule.camera_id == camera.id) | (AlertRule.camera_id.is_(None)))
+                .all()
+            )
+            for rule in rules:
+                flag = f"object:{rule.target}"
+                checks.append((flag, True, rule.target in detected_classes, f"CPU · {rule.target.title()} detected"))
         for flag, enabled, detected, category in checks:
             streaks[flag] = streaks.get(flag, 0) + 1 if detected else 0
             quiet_key = flag + "_quiet"
@@ -266,7 +297,8 @@ class CpuMonitor:
                 snapshot = image_to_data_uri(frame_to_pil(drawn))
                 for flag, category in candidates:
                     summary = f"OpenCV measurement in the watch area: changed pixels {result['motion_percent']}%; brightness {result['brightness']}/255; edge-detail score {result['sharpness']}; faces {result.get('face_count', 0)}; people {result.get('people_count', 0)}. No identity inferred."
-                    db.add(Event(camera_id=camera.id, severity="info" if flag in ("motion", "face", "people") else "warning", category=category, summary=summary, snapshot=snapshot))
+                    severity = "info" if flag in ("motion", "face", "people") or flag.startswith("object:") else "warning"
+                    db.add(Event(camera_id=camera.id, severity=severity, category=category, summary=summary, snapshot=snapshot))
                 db.commit()
             self._states[camera.id] = {"gray": gray, "result": result, "streaks": streaks, "active": active, "last_event": last_event, "tick": tick}
             self._settings[camera.id] = settings.model_dump()

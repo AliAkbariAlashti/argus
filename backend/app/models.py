@@ -104,16 +104,24 @@ class Event(Base):
 
 
 class AlertRule(Base):
-    """Operator-defined watch condition ("car", "backpack left behind"). The
-    background monitor folds every active rule for a camera into its regular
-    structured classification call (see grounding.build_event_prompt and
-    monitor.py) instead of one extra VLM call per rule — custom rules don't
-    multiply GPU load."""
+    """Operator-defined watch condition. Two independent sources:
+
+    - "vlm": free-text target ("a person carrying a backpack"), judged by
+      the connected vision model. Every active vlm rule for a camera folds
+      into one shared structured classification call (see
+      grounding.build_event_prompt and monitor.py) instead of one extra
+      VLM call per rule — custom rules don't multiply GPU load. Requires a
+      connected, ready vision model; a no-op otherwise.
+    - "cpu": target is one of YOLO_CLASSES (see cpu.py), matched exactly
+      against the CPU-tools object detector. Works with no vision model at
+      all — every install, GPU or not.
+    """
 
     __tablename__ = "alert_rules"
 
     id = Column(String, primary_key=True, default=_new_id)
     camera_id = Column(String, nullable=True)  # null = every camera
+    source = Column(String, nullable=False, default="vlm")  # "vlm" | "cpu"
     target = Column(String, nullable=False)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -122,6 +130,7 @@ class AlertRule(Base):
         return {
             "id": self.id,
             "camera_id": self.camera_id,
+            "source": self.source,
             "target": self.target,
             "enabled": self.enabled,
             "created_at": _utc_iso(self.created_at),

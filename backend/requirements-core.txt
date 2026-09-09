@@ -9,3 +9,4 @@ numpy>=1.26,<3
 python-multipart>=0.0.20,<1
 sqlalchemy>=2.0,<3
 psycopg[binary]>=3.2,<4
+onnxruntime>=1.18,<2  # CPU-only object detection (YOLOv8n); no torch/CUDA dependency

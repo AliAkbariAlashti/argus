@@ -46,3 +46,32 @@ def test_annotate_draws_face_and_people_boxes():
     drawn = annotate(frame, result, settings)
     assert drawn.shape == frame.shape
     assert drawn.any()
+
+
+def test_annotate_draws_object_boxes_with_labels():
+    frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    settings = CpuSettings()
+    result = {"boxes": [], "objects": [{"class": "person", "confidence": 0.87, "box": [0.2, 0.2, 0.3, 0.4]}]}
+    drawn = annotate(frame, result, settings)
+    assert drawn.shape == frame.shape
+    assert drawn.any()
+
+
+def test_measure_skips_object_detection_when_model_unavailable(monkeypatch):
+    from app import cpu as module
+
+    monkeypatch.setattr(module.yolo, "detect", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")))
+    settings = CpuSettings(object_alerts=False)
+    frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    result, _ = measure(frame, None, settings, run_detectors=True)
+    assert "objects" not in result
+
+
+def test_measure_runs_object_detection_when_enabled(monkeypatch):
+    from app import cpu as module
+
+    monkeypatch.setattr(module.yolo, "detect", lambda frame, conf_threshold=0.4: [("person", 0.9, [0.1, 0.1, 0.2, 0.2])])
+    settings = CpuSettings(object_alerts=True)
+    frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    result, _ = measure(frame, None, settings, run_detectors=True)
+    assert result["objects"] == [{"class": "person", "confidence": 0.9, "box": [0.1, 0.1, 0.2, 0.2]}]

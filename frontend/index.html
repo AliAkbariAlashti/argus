@@ -210,15 +210,21 @@
           <div class="alert-rules-panel">
             <div class="alert-rules-header">
               <span>Alert rules</span>
-              <span class="events-sub">Watch for visible people, objects, or scene conditions. Matches are sampled and should be reviewed.</span>
+              <span class="events-sub">Watch for a specific object with CPU detection — no AI model needed — or describe anything in plain language with a connected AI model. Matches are sampled and should be reviewed.</span>
             </div>
             <form id="alert-rule-form" class="alert-rule-form">
               <select id="alert-rule-camera" class="events-select">
                 <option value="">All sources</option>
               </select>
-              <input type="text" id="alert-rule-target" placeholder='e.g. &quot;a person carrying a backpack&quot;' required />
+              <select id="alert-rule-source" class="events-select">
+                <option value="cpu">CPU object detection — no AI model needed</option>
+                <option value="vlm">AI vision model — needs a connected model</option>
+              </select>
+              <select id="alert-rule-class" class="events-select"></select>
+              <input type="text" id="alert-rule-target" placeholder='e.g. &quot;a person carrying a backpack&quot;' required hidden />
               <button type="submit" class="btn-primary">Add rule</button>
             </form>
+            <p class="events-sub" id="alert-rule-cpu-note"></p>
             <div class="alert-rules-list" id="alert-rules-list"></div>
           </div>
         </div>
@@ -263,6 +269,7 @@
               <label class="check-field"><input type="checkbox" id="cpu-quality-alerts" /> Save low-light / low-detail warnings</label>
               <label class="check-field"><input type="checkbox" id="cpu-face-alerts" /> Detect faces (Haar cascade) and save events</label>
               <label class="check-field"><input type="checkbox" id="cpu-people-alerts" /> Detect people (HOG pedestrian detector) and save events</label>
+              <label class="check-field"><input type="checkbox" id="cpu-object-alerts" /> Detect objects (person, car, backpack, and 77 more — powers CPU alert rules)</label>
               <label class="field"><span>Motion trigger (% of watch area)</span><input type="number" id="cpu-threshold" min="0.1" max="80" step="0.1" value="2" required /></label>
               <label class="field"><span>Minimum seconds between events of the same type</span><input type="number" id="cpu-cooldown" min="5" max="3600" value="30" required /></label>
               <div class="area-fields"><label class="field"><span>Left %</span><input type="number" id="cpu-x" min="0" max="95" value="0" step="1" required /></label><label class="field"><span>Top %</span><input type="number" id="cpu-y" min="0" max="95" value="0" step="1" required /></label><label class="field"><span>Width %</span><input type="number" id="cpu-width" min="5" max="100" value="100" step="1" required /></label><label class="field"><span>Height %</span><input type="number" id="cpu-height" min="5" max="100" value="100" step="1" required /></label></div>

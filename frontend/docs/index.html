@@ -109,13 +109,21 @@
           <tr><td>Sharpness / blur</td><td>Variance of the Laplacian</td><td>Edge-detail score, flag below a configurable threshold</td></tr>
           <tr><td>Faces</td><td>Haar-cascade classifier (<code>haarcascade_frontalface_default.xml</code>, bundled with OpenCV)</td><td>Face count and boxes, sampled every few seconds</td></tr>
           <tr><td>People</td><td>HOG descriptor + built-in pedestrian SVM</td><td>Person count and boxes, sampled every few seconds</td></tr>
+          <tr><td>Objects</td><td>YOLOv8n, a small object-detection model that runs entirely on CPU</td><td>80 everyday object types (person, car, dog, backpack, and more) with confidence and boxes</td></tr>
         </table>
-        <p>Face and people detection are heavier than motion, so they run on a slower cadence and only when enabled —
-        they never affect the motion/brightness sampling rate. Toggle each on the <strong>CPU tools</strong> page,
-        along with an optional cooldown so repeated detections don't spam the activity feed.</p>
-        <p class="note">These are pixel-level measurements, not object recognition. A moving shadow can register as
-        motion; a poster of a face can register as a face. Treat results as a fast, free first signal — pair with a
-        vision model (below) when you need identity, context, or natural-language answers.</p>
+        <p>Face, people and object detection are heavier than motion, so they run on a slower cadence and only when
+        enabled — they never affect the motion/brightness sampling rate. Toggle each on the <strong>CPU tools</strong>
+        page, along with an optional cooldown so repeated detections don't spam the activity feed.</p>
+        <p class="note">These are pixel-level and small-model measurements, not the judgment a vision model gives you.
+        A moving shadow can register as motion; a poster of a face can register as a face; object detection can miss
+        unusual angles or lighting. Treat results as a fast, free first signal — pair with a vision model (below)
+        when you need identity, context, or natural-language answers.</p>
+        <h3>Alert rules without a vision model</h3>
+        <p>On the <strong>Rules</strong> page, choose <em>CPU object detection</em> as the rule source and pick a
+        class from the list (person, car, backpack, etc.) — the rule fires whenever object detection is enabled on
+        that camera and finds a match, with no vision model connected at all. Choosing <em>AI vision model</em>
+        instead lets you describe anything in plain language ("a person carrying a backpack"), but only works once a
+        model is connected in <strong>AI setup</strong>.</p>
       </section>
 
       <section id="ollama">

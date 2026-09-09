@@ -35,7 +35,7 @@ async function loadCpu(reset = false) {
 }
 
 function populateCpuForm(s) {
-  for (const [id, key] of [['enabled','enabled'],['motion-alerts','motion_alerts'],['quality-alerts','quality_alerts'],['face-alerts','face_alerts'],['people-alerts','people_alerts']]) cpuEl(id).checked = s[key];
+  for (const [id, key] of [['enabled','enabled'],['motion-alerts','motion_alerts'],['quality-alerts','quality_alerts'],['face-alerts','face_alerts'],['people-alerts','people_alerts'],['object-alerts','object_alerts']]) cpuEl(id).checked = s[key];
   cpuEl('threshold').value = +(s.motion_threshold * 100).toFixed(2);
   cpuEl('cooldown').value = s.cooldown_seconds;
   cpuEl('dark').value = s.dark_threshold;
@@ -55,6 +55,7 @@ function renderCpu(row) {
     ['Motion regions', valid ? String(s.boxes.length) : '—', 'Connected pixel regions, not people'],
     ['Faces detected', valid && s.face_count !== undefined ? String(s.face_count) : '—', 'Haar cascade, sampled every few seconds'],
     ['People detected', valid && s.people_count !== undefined ? String(s.people_count) : '—', 'HOG pedestrian detector, sampled every few seconds'],
+    ['Objects detected', valid && s.objects !== undefined ? String(s.objects.length) : '—', valid && s.objects && s.objects.length ? [...new Set(s.objects.map(o => o.class))].join(', ') : 'Sampled every few seconds'],
   ];
   cpuEl('metrics').innerHTML = metrics.map(([label,value,note]) => `<div class="stat"><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${escapeHtml(value)}</div><div class="stat-sub">${escapeHtml(note)}</div></div>`).join('');
   cpuEl('download').disabled = !valid;
@@ -101,7 +102,7 @@ cpuEl('form').onsubmit = async e => {
   const target = cpuId;
   cpuEl('save').disabled = true;
   cpuEl('save-message').textContent = 'Saving…';
-  const body = {enabled: cpuEl('enabled').checked, motion_alerts: cpuEl('motion-alerts').checked, quality_alerts: cpuEl('quality-alerts').checked, face_alerts: cpuEl('face-alerts').checked, people_alerts: cpuEl('people-alerts').checked, motion_threshold: Number(cpuEl('threshold').value)/100, cooldown_seconds: Number(cpuEl('cooldown').value), dark_threshold: Number(cpuEl('dark').value), blur_threshold: Number(cpuEl('blur').value), area: Object.fromEntries(['x','y','width','height'].map(k => [k, Number(cpuEl(k).value)/100]))};
+  const body = {enabled: cpuEl('enabled').checked, motion_alerts: cpuEl('motion-alerts').checked, quality_alerts: cpuEl('quality-alerts').checked, face_alerts: cpuEl('face-alerts').checked, people_alerts: cpuEl('people-alerts').checked, object_alerts: cpuEl('object-alerts').checked, motion_threshold: Number(cpuEl('threshold').value)/100, cooldown_seconds: Number(cpuEl('cooldown').value), dark_threshold: Number(cpuEl('dark').value), blur_threshold: Number(cpuEl('blur').value), area: Object.fromEntries(['x','y','width','height'].map(k => [k, Number(cpuEl(k).value)/100]))};
   try {
     const res = await fetch(`${API}/api/cpu/${target}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     const data = await res.json();

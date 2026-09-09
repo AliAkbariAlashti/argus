@@ -151,7 +151,7 @@ class EventMonitor:
 
         rules = (
             db.query(AlertRule)
-            .filter(AlertRule.enabled.is_(True))
+            .filter(AlertRule.enabled.is_(True), AlertRule.source == "vlm")
             .filter((AlertRule.camera_id == cam.id) | (AlertRule.camera_id.is_(None)))
             .all()
         )
