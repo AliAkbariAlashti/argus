@@ -31,6 +31,13 @@ CLASSES = [
     "toothbrush",
 ]
 
+# Suggested default severity per class when creating a CPU alert rule — a
+# starting point the operator can always override, not a fixed judgment.
+# COCO's 80 classes have no gun/rifle class at all; "weapon-adjacent" here
+# only covers what YOLOv8n can actually recognize.
+_WARNING_CLASSES = {"knife", "scissors", "baseball bat"}
+DEFAULT_SEVERITY = {cls: ("warning" if cls in _WARNING_CLASSES else "info") for cls in CLASSES}
+
 _session = None
 _load_error = None
 

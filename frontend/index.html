@@ -228,6 +228,11 @@
               </select>
               <select id="alert-rule-class" class="events-select"></select>
               <input type="text" id="alert-rule-target" placeholder='e.g. &quot;a person carrying a backpack&quot;' required hidden />
+              <select id="alert-rule-severity" class="events-select" title="Severity when this rule matches">
+                <option value="info">Info</option>
+                <option value="warning">Warning</option>
+                <option value="critical">Critical</option>
+              </select>
               <button type="submit" class="btn-primary">Add rule</button>
             </form>
             <p class="events-sub" id="alert-rule-cpu-note"></p>

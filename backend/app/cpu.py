@@ -274,13 +274,13 @@ class CpuMonitor:
         now = time.monotonic()
         candidates = []
         checks = [
-            ("motion", settings.motion_alerts, result["motion"], "CPU · Motion detected"),
-            ("low_light", settings.quality_alerts, result["low_light"], "CPU · Low-light frame"),
-            ("low_detail", settings.quality_alerts, result["low_detail"], "CPU · Low detail / possible blur"),
+            ("motion", settings.motion_alerts, result["motion"], "CPU · Motion detected", "info"),
+            ("low_light", settings.quality_alerts, result["low_light"], "CPU · Low-light frame", "warning"),
+            ("low_detail", settings.quality_alerts, result["low_detail"], "CPU · Low detail / possible blur", "warning"),
         ]
         if run_detectors:
-            checks.append(("face", settings.face_alerts, result.get("face_count", 0) > 0, "CPU · Face detected"))
-            checks.append(("people", settings.people_alerts, result.get("people_count", 0) > 0, "CPU · Person detected"))
+            checks.append(("face", settings.face_alerts, result.get("face_count", 0) > 0, "CPU · Face detected", "info"))
+            checks.append(("people", settings.people_alerts, result.get("people_count", 0) > 0, "CPU · Person detected", "info"))
         if run_detectors and settings.object_alerts:
             detected_classes = {obj["class"] for obj in result.get("objects", [])}
             rules = (
@@ -291,15 +291,15 @@ class CpuMonitor:
             )
             for rule in rules:
                 flag = f"object:{rule.target}"
-                checks.append((flag, True, rule.target in detected_classes, f"CPU · {rule.target.title()} detected"))
-        for flag, enabled, detected, category in checks:
+                checks.append((flag, True, rule.target in detected_classes, f"CPU · {rule.target.title()} detected", rule.severity))
+        for flag, enabled, detected, category, severity in checks:
             streaks[flag] = streaks.get(flag, 0) + 1 if detected else 0
             quiet_key = flag + "_quiet"
             streaks[quiet_key] = 0 if detected else streaks.get(quiet_key, 0) + 1
             if streaks[quiet_key] >= 4:
                 active[flag] = False
             if enabled and streaks[flag] >= 2 and not active.get(flag) and now - last_event.get(flag, -float("inf")) >= settings.cooldown_seconds:
-                candidates.append((flag, category))
+                candidates.append((flag, category, severity))
                 active[flag] = True
                 last_event[flag] = now
         drawn = annotate(frame, result, settings)
@@ -315,9 +315,8 @@ class CpuMonitor:
                 return
             if candidates:
                 snapshot = image_to_data_uri(frame_to_pil(drawn))
-                for flag, category in candidates:
+                for flag, category, severity in candidates:
                     summary = f"OpenCV measurement in the watch area: changed pixels {result['motion_percent']}%; brightness {result['brightness']}/255; edge-detail score {result['sharpness']}; faces {result.get('face_count', 0)}; people {result.get('people_count', 0)}. No identity inferred."
-                    severity = "info" if flag in ("motion", "face", "people") or flag.startswith("object:") else "warning"
                     db.add(Event(camera_id=camera.id, severity=severity, category=category, summary=summary, snapshot=snapshot))
             if log_detection:
                 db.add(Detection(

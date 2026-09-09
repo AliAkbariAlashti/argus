@@ -130,3 +130,45 @@ def test_prune_detections_throttled_to_once_per_ten_minutes():
     db.commit.assert_called_once()
     monitor._prune_detections(db)
     db.query.assert_called_once()  # second call within the window is a no-op
+
+
+def test_cpu_rule_match_uses_the_rules_own_severity(monkeypatch):
+    from app import cpu as module
+
+    monkeypatch.setattr(module.yolo, "detect", lambda *a, **k: [("knife", 0.9, [0.1, 0.1, 0.2, 0.2])])
+    monitor = CpuMonitor()
+    camera = SimpleNamespace(id="cam1")
+    settings = CpuSettings(object_alerts=True, motion_alerts=False, cooldown_seconds=5)
+    frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    rule = SimpleNamespace(target="knife", severity="critical")
+    db = Mock()
+    db.query.return_value.filter.return_value.filter.return_value.all.return_value = [rule]
+
+    # Two detector ticks needed before a candidate is confirmed (streak >= 2).
+    _run_process_ticks(monitor, camera, frame, settings, 13, db)
+
+    event_adds = [c.args[0] for c in db.add.call_args_list if isinstance(c.args[0], module.Event)]
+    assert event_adds, "expected at least one Event to be logged"
+    assert event_adds[0].severity == "critical"
+    assert event_adds[0].category == "CPU · Knife detected"
+
+
+def test_motion_and_quality_events_keep_their_fixed_severity(monkeypatch):
+    from app import cpu as module
+
+    monitor = CpuMonitor()
+    camera = SimpleNamespace(id="cam1")
+    settings = CpuSettings(motion_alerts=True, quality_alerts=True, cooldown_seconds=5,
+                           dark_threshold=150, blur_threshold=1000)  # max thresholds; a black frame is always below both
+    frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    db = Mock()
+    db.query.return_value.filter.return_value.filter.return_value.all.return_value = []
+
+    monitor.process(db, camera, frame, settings)  # warm-up tick, no previous frame
+    monitor.process(db, camera, frame, settings)
+    monitor.process(db, camera, frame, settings)
+
+    event_adds = [c.args[0] for c in db.add.call_args_list if isinstance(c.args[0], module.Event)]
+    severities = {e.category: e.severity for e in event_adds}
+    assert severities.get("CPU · Low-light frame") == "warning"
+    assert severities.get("CPU · Low detail / possible blur") == "warning"

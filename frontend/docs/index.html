@@ -128,6 +128,13 @@
         <p class="note"><strong>A rule only fires if its detector is actually enabled on that camera.</strong> A CPU
         "car" rule does nothing until you also turn on object detection for that camera here on the CPU tools page —
         the rule and the detector are two separate switches.</p>
+        <h3>Choosing a rule's severity</h3>
+        <p>Every CPU rule carries its own severity (Info, Warning, or Critical) — a "car" match and a "knife" match
+        don't have to look the same in the Activity feed. Picking a class pre-fills a sensible default (classes like
+        <code>knife</code>, <code>scissors</code>, and <code>baseball bat</code> default to Warning; everything else
+        to Info) but you can change it, per rule, at any time. VLM rules are always logged as Warning — only a
+        connected vision model can flag something Critical (a possible weapon), since COCO's fixed 80 classes that
+        power CPU detection don't include one.</p>
         <h3>Two different logs</h3>
         <p>The <strong>Activity</strong> page shows one entry per state change — a car enters frame, a person leaves
         — so it stays readable instead of repeating the same ongoing detection every few seconds. If you want the

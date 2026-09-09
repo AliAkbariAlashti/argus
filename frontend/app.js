@@ -58,6 +58,7 @@ const el = {
   alertRuleSource: document.getElementById("alert-rule-source"),
   alertRuleClass: document.getElementById("alert-rule-class"),
   alertRuleTarget: document.getElementById("alert-rule-target"),
+  alertRuleSeverity: document.getElementById("alert-rule-severity"),
   alertRuleCpuNote: document.getElementById("alert-rule-cpu-note"),
   alertRulesList: document.getElementById("alert-rules-list"),
 
@@ -1184,20 +1185,29 @@ async function loadAlertRules() {
 }
 
 let cpuClasses = [];
+let cpuDefaultSeverity = {};
 async function loadCpuClasses() {
   try {
     const res = await fetch(`${API}/api/alert-rules/cpu-classes`);
     if (!res.ok) return;
     const data = await res.json();
     cpuClasses = data.classes;
+    cpuDefaultSeverity = data.default_severity || {};
     el.alertRuleClass.innerHTML = cpuClasses.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
     el.alertRuleCpuNote.textContent = data.available
       ? "Matches are sampled and should be reviewed."
       : "Object detection model is not available on this server yet.";
+    applyCpuDefaultSeverity();
   } catch (e) {
     // Transient errors shouldn't break other views.
   }
 }
+
+function applyCpuDefaultSeverity() {
+  const suggested = cpuDefaultSeverity[el.alertRuleClass.value];
+  if (suggested) el.alertRuleSeverity.value = suggested;
+}
+el.alertRuleClass.addEventListener("change", applyCpuDefaultSeverity);
 
 function updateAlertRuleFormMode() {
   const isCpu = el.alertRuleSource.value === "cpu";
@@ -1205,6 +1215,8 @@ function updateAlertRuleFormMode() {
   el.alertRuleTarget.hidden = isCpu;
   el.alertRuleTarget.required = !isCpu;
   el.alertRuleCpuNote.hidden = !isCpu;
+  el.alertRuleSeverity.hidden = !isCpu; // VLM rule severity is fixed server-side ("warning")
+  if (isCpu) applyCpuDefaultSeverity();
 }
 el.alertRuleSource.addEventListener("change", updateAlertRuleFormMode);
 updateAlertRuleFormMode();
@@ -1220,9 +1232,15 @@ function renderAlertRulesList() {
     row.className = "alert-rule-row" + (rule.enabled ? "" : " disabled");
     const camLabel = rule.camera_id ? eventCameraLabel(rule.camera_id) : "All sources";
     const sourceLabel = rule.source === "cpu" ? "CPU" : "AI model";
+    const severityOptions = ["info", "warning", "critical"]
+      .map(s => `<option value="${s}" ${rule.severity === s ? "selected" : ""}>${s[0].toUpperCase()}${s.slice(1)}</option>`)
+      .join("");
     row.innerHTML = `
       <span class="alert-rule-target">"${escapeHtml(rule.target)}" <em>(${sourceLabel})</em></span>
       <span class="alert-rule-camera">${escapeHtml(camLabel)}</span>
+      ${rule.source === "cpu"
+        ? `<select class="events-select alert-rule-severity" data-action="severity">${severityOptions}</select>`
+        : `<span class="alert-rule-camera">Warning</span>`}
       <label class="alert-rule-toggle">
         <input type="checkbox" ${rule.enabled ? "checked" : ""} />
         <span>${rule.enabled ? "Enabled" : "Disabled"}</span>
@@ -1230,7 +1248,10 @@ function renderAlertRulesList() {
       <button class="btn-icon danger" data-action="delete">Delete</button>
     `;
     row.querySelector('input[type="checkbox"]').addEventListener("change", (e) => {
-      toggleAlertRule(rule.id, e.target.checked);
+      updateAlertRule(rule.id, { enabled: e.target.checked });
+    });
+    row.querySelector('[data-action="severity"]')?.addEventListener("change", (e) => {
+      updateAlertRule(rule.id, { severity: e.target.value });
     });
     row.querySelector('[data-action="delete"]').addEventListener("click", () => {
       deleteAlertRule(rule.id);
@@ -1239,11 +1260,11 @@ function renderAlertRulesList() {
   }
 }
 
-async function toggleAlertRule(ruleId, enabled) {
+async function updateAlertRule(ruleId, patch) {
   const res = await fetch(`${API}/api/alert-rules/${ruleId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(patch),
   });
   if (!res.ok) { alert("Could not update the rule. Please retry."); }
   await loadAlertRules();
@@ -1261,10 +1282,12 @@ el.alertRuleForm.addEventListener("submit", async (e) => {
   const target = source === "cpu" ? el.alertRuleClass.value : el.alertRuleTarget.value.trim();
   if (!target) return;
   const camera_id = el.alertRuleCamera.value || null;
+  const body = { camera_id, source, target };
+  if (source === "cpu") body.severity = el.alertRuleSeverity.value;
   const res = await fetch(`${API}/api/alert-rules`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ camera_id, source, target }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) { const data = await res.json().catch(() => ({})); alert(typeof data.detail === "string" ? data.detail : "Could not create the rule."); return; }
   el.alertRuleTarget.value = "";

@@ -123,6 +123,10 @@ class AlertRule(Base):
     camera_id = Column(String, nullable=True)  # null = every camera
     source = Column(String, nullable=False, default="vlm")  # "vlm" | "cpu"
     target = Column(String, nullable=False)
+    # Severity the logged Event gets when this rule matches. "vlm" rules are
+    # always "warning" (see grounding.py); "cpu" rules choose their own, since
+    # a "car" match and a "knife" match shouldn't read the same in Activity.
+    severity = Column(String, nullable=False, default="info")  # "info" | "warning" | "critical"
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -132,6 +136,7 @@ class AlertRule(Base):
             "camera_id": self.camera_id,
             "source": self.source,
             "target": self.target,
+            "severity": self.severity,
             "enabled": self.enabled,
             "created_at": _utc_iso(self.created_at),
         }
