@@ -54,6 +54,10 @@ const assert = require('node:assert/strict');
       await page.locator(`.rail-btn[data-view="${view}"]`).click();
       assert(await page.locator(`#view-${view}`).isVisible());
     }
+    assert(await page.locator('#runtime-active-card').isVisible());
+    assert(await page.locator('#runtime-profiles-list').isVisible());
+    assert(await page.locator('#runtime-stats').isVisible());
+    assert(await page.locator('#runtime-pipeline').isVisible());
     await page.setViewportSize({ width: 390, height: 844 });
     for (const view of ['dashboard', 'chat', 'runtime', 'alerts', 'directory']) {
       await page.locator(`.rail-btn[data-view="${view}"]`).click();

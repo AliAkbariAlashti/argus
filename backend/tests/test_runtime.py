@@ -134,3 +134,18 @@ def test_provider_failure_disables_ai_without_switching_provider(runtime, monkey
     assert not runtime.ready
     assert runtime.public_settings()["provider"] == "compatible"
     assert "503" in runtime.error
+
+
+def test_saved_profiles_can_be_switched_without_exposing_keys(runtime):
+    runtime.configure({**settings(model="vision-a"), "name": "Office model"})
+    first_id = runtime.public_settings()["profile_id"]
+    runtime.configure({**settings(model="vision-b", api_key="secret-b"), "name": "Backup model", "create_new": True, "activate": False})
+    profiles = runtime.public_profiles()
+    assert len(profiles) == 2
+    assert {profile["name"] for profile in profiles} == {"Office model", "Backup model"}
+    assert all("api_key" not in profile for profile in profiles)
+    runtime.activate(next(profile["id"] for profile in profiles if profile["name"] == "Backup model"))
+    assert runtime.public_settings()["model"] == "vision-b"
+    reloaded = VisionRuntime(runtime.path)
+    assert reloaded.public_settings()["model"] == "vision-b"
+    assert reloaded.public_settings()["profile_id"] != first_id

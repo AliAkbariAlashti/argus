@@ -1362,6 +1362,9 @@ function escapeHtml(str) {
 }
 
 /* ---------- Hardware-independent AI setup ---------- */
+let runtimeState = { settings: {}, hardware: {}, profiles: [], active_profile_id: null };
+let runtimeEditingId = null;
+
 function runtimeFields() {
   const provider = document.getElementById("runtime-provider").value;
   document.getElementById("runtime-api-fields").hidden = provider !== "compatible";
@@ -1370,34 +1373,133 @@ function runtimeFields() {
 }
 document.getElementById("runtime-provider").onchange = runtimeFields;
 document.getElementById("setup-shortcut").onclick = () => switchView("runtime");
+
+function runtimeProviderLabel(provider) {
+  return {none: "CPU tools only", compatible: "Compatible vision API", embedded: "Embedded Qwen"}[provider] || provider;
+}
+
+function runtimeProfileStatus(profile, settings) {
+  if (profile.provider === "none") return ["CPU ready", "ok"];
+  if (profile.active && settings.ready) return ["Ready", "ok"];
+  if (profile.last_test_status === "failed") return ["Test failed", "failed"];
+  if (profile.last_test_status === "passed") return ["Verified · retest on use", "pending"];
+  return ["Needs test", "pending"];
+}
+
+function renderRuntimeProfiles() {
+  const list = document.getElementById("runtime-profiles-list");
+  const profiles = runtimeState.profiles || [];
+  document.getElementById("runtime-setup-count").textContent = `${profiles.length} setup${profiles.length === 1 ? "" : "s"}`;
+  if (!profiles.length) {
+    list.innerHTML = `<div class="runtime-empty">No saved vision connections yet.<br />Create one to start testing a model.</div>`;
+    return;
+  }
+  list.innerHTML = profiles.map(profile => {
+    const [status, statusClass] = runtimeProfileStatus(profile, runtimeState.settings);
+    const detail = profile.provider === "none" ? "OpenCV and CPU tools" : `${profile.model || "No model selected"} · ${profile.base_url || "Embedded runtime"}`;
+    return `<article class="runtime-profile ${profile.active ? "active" : ""}">
+      <div class="runtime-profile-main"><div class="runtime-profile-title"><strong>${escapeHtml(profile.name)}</strong>${profile.active ? `<em>active</em>` : ""}</div><div class="runtime-profile-detail">${escapeHtml(detail)}</div></div>
+      <div class="runtime-profile-actions"><span class="runtime-status ${statusClass}">${escapeHtml(status)}</span><button type="button" class="btn-ghost" data-runtime-action="edit" data-profile-id="${escapeHtml(profile.id)}">Edit</button>${profile.active ? "" : `<button type="button" class="btn-ghost" data-runtime-action="activate" data-profile-id="${escapeHtml(profile.id)}">Use</button>`}<button type="button" class="btn-ghost" data-runtime-action="delete" data-profile-id="${escapeHtml(profile.id)}">Delete</button></div>
+    </article>`;
+  }).join("");
+}
+
+function renderRuntimeActive() {
+  const root = document.getElementById("runtime-active-card");
+  const settings = runtimeState.settings || {};
+  const profile = (runtimeState.profiles || []).find(item => item.id === runtimeState.active_profile_id);
+  if (!profile) {
+    root.innerHTML = `<div class="runtime-active-main"><div class="runtime-active-icon">CPU</div><div class="runtime-active-copy"><strong>CPU tools only</strong><span>OpenCV analysis is available without a vision model</span></div></div><div class="runtime-active-meta"><div><strong>Active path</strong><span class="runtime-status ok">Available now</span></div><button class="btn-ghost" type="button" data-runtime-action="new">Add vision setup</button></div>`;
+    return;
+  }
+  const [status, statusClass] = runtimeProfileStatus(profile, settings);
+  const subtitle = profile.provider === "none" ? "OpenCV analysis is available without a vision model" : `${runtimeProviderLabel(profile.provider)} · ${profile.model || "model not selected"}`;
+  const action = profile.active && settings.ready ? "" : `<button class="btn-primary" type="button" data-runtime-action="edit" data-profile-id="${escapeHtml(profile.id)}">Configure</button>`;
+  root.innerHTML = `<div class="runtime-active-main"><div class="runtime-active-icon">AI</div><div class="runtime-active-copy"><strong>${escapeHtml(profile.name)}</strong><span>${escapeHtml(subtitle)}</span></div></div><div class="runtime-active-meta"><div><strong>Current state</strong><span class="runtime-status ${statusClass}">${escapeHtml(status)}</span></div>${action}</div>`;
+}
+
+function renderRuntimePipeline() {
+  const settings = runtimeState.settings || {};
+  const profile = (runtimeState.profiles || []).find(item => item.id === runtimeState.active_profile_id);
+  const ai = settings.provider && settings.provider !== "none";
+  const steps = [
+    ["Setup", ai ? "Saved" : "CPU mode", ai],
+    ["Endpoint", ai ? (settings.provider === "embedded" ? "Embedded" : (settings.base_url ? "Configured" : "Missing")) : "Skipped", !ai || settings.provider === "embedded" || Boolean(settings.base_url)],
+    ["Model", ai ? (settings.model || "Missing") : "No model", !ai || Boolean(settings.model)],
+    ["Vision test", ai ? (settings.ready ? "Passed" : (profile?.last_test_status === "failed" ? "Failed" : "Needs test")) : "Not required", !ai || settings.ready],
+  ];
+  document.getElementById("runtime-pipeline").innerHTML = steps.map(([name, value, ok]) => `<div class="runtime-pipeline-step ${ok ? "ok" : (value === "Failed" ? "failed" : "")}"><strong>${escapeHtml(name)}</strong><span>${escapeHtml(value)}</span></div>`).join("");
+  const tested = profile?.last_tested_at ? new Date(profile.last_tested_at).toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}) : "Awaiting test";
+  document.getElementById("runtime-pipeline-time").textContent = tested;
+}
+
+function renderRuntimeCapabilities() {
+  const settings = runtimeState.settings || {};
+  const hardware = runtimeState.hardware || {};
+  document.getElementById("runtime-hardware").textContent = `${hardware.cpu_count || "—"} CPU threads · ${hardware.nvidia_gpu || "NVIDIA GPU not detected"}. ${hardware.recommendation || ""}`;
+  document.getElementById("runtime-capabilities").innerHTML = [
+    ["Camera viewing & uploads", "Available · CPU"],
+    ["Motion, watch areas & quality", "Available · OpenCV CPU"],
+    ["Measurement reports & CSV export", "Available · no model"],
+    ["Saved activity & snapshots", "Available · database"],
+    ["Visual chat", settings.ready ? "Connected" : "Needs tested vision connection"],
+    ["Vision-model detections", settings.ready && settings.monitor_enabled ? "Enabled" : "Not enabled"],
+    ["NVIDIA GPU", hardware.nvidia_gpu || "Not detected"],
+    ["Historical video search", "Not included in this MVP"],
+  ].map(([name, value]) => `<div class="runtime-capability"><span>${escapeHtml(name)}</span><span>${escapeHtml(value)}</span></div>`).join("");
+}
+
+function renderRuntimeUsage(usage) {
+  usage = usage || {total_requests: 0, last_24h: 0, last_7d: 0, daily: []};
+  document.getElementById("runtime-stats").innerHTML = [["Last 24h", usage.last_24h, "chat answers"], ["Last 7 days", usage.last_7d, "chat answers"], ["All time", usage.total_requests, "saved answers"]].map(([label, value, sub]) => `<div class="runtime-stat"><div class="runtime-stat-label">${label}</div><div class="runtime-stat-value">${value}</div><div class="runtime-stat-sub">${sub}</div></div>`).join("");
+  document.getElementById("runtime-usage-updated").textContent = usage.last_response_at ? `Last answer ${new Date(usage.last_response_at).toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"})}` : "No requests yet";
+  const daily = usage.daily || [];
+  const max = Math.max(1, ...daily.map(item => item.requests));
+  document.getElementById("runtime-usage-chart").innerHTML = daily.length ? daily.map(item => `<div class="runtime-chart-bar" title="${item.requests} answer${item.requests === 1 ? "" : "s"}"><i style="height:${Math.max(4, Math.round(item.requests / max * 100))}%"></i><span>${escapeHtml(item.date.slice(5))}</span></div>`).join("") : `<span class="runtime-chart-empty">Usage will appear after the first visual answer.</span>`;
+}
+
+function fillRuntimeForm(profile) {
+  profile = profile || {name: "", provider: "none", base_url: "", model: "", allow_remote: false, monitor_enabled: false, has_api_key: false};
+  document.getElementById("runtime-name").value = profile.name || "";
+  document.getElementById("runtime-provider").value = profile.provider || "none";
+  document.getElementById("runtime-url").value = profile.base_url || "";
+  document.getElementById("runtime-model").value = profile.model || "";
+  document.getElementById("runtime-key").value = "";
+  document.getElementById("runtime-key").placeholder = profile.has_api_key ? "Key saved · leave blank to keep" : "Optional for a local server";
+  document.getElementById("runtime-remote").checked = Boolean(profile.allow_remote);
+  document.getElementById("runtime-monitor").checked = Boolean(profile.monitor_enabled);
+  runtimeFields();
+}
+
+function openRuntimeEditor(profile) {
+  runtimeEditingId = profile?.id || null;
+  document.getElementById("runtime-editor").hidden = false;
+  document.getElementById("runtime-editor-eyebrow").textContent = profile ? "EDIT SAVED CONNECTION" : "NEW CONNECTION";
+  document.getElementById("runtime-editor-title").textContent = profile ? `Edit ${profile.name}` : "Create an AI setup";
+  fillRuntimeForm(profile);
+  document.getElementById("runtime-editor").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
 async function loadRuntime() {
   try {
-    const res = await fetch(`${API}/api/runtime`);
+    const [res, usageRes] = await Promise.all([fetch(`${API}/api/runtime`), fetch(`${API}/api/runtime/usage`)]);
     if (!res.ok) throw new Error("Could not load AI settings.");
-    const {settings, hardware} = await res.json();
-    document.getElementById("runtime-provider").value = settings.provider;
-    document.getElementById("runtime-url").value = settings.base_url;
-    document.getElementById("runtime-model").value = settings.model;
-    document.getElementById("runtime-key").value = "";
-    document.getElementById("runtime-key").placeholder = settings.has_api_key ? "Key saved · leave blank to keep" : "Optional for a local server";
-    document.getElementById("runtime-remote").checked = settings.allow_remote;
-    document.getElementById("runtime-monitor").checked = settings.monitor_enabled;
-    document.getElementById("runtime-hardware").textContent = hardware.recommendation;
-    document.getElementById("runtime-capabilities").innerHTML = [
-      ["Camera viewing & uploads", "Available · CPU"],
-      ["Motion, watch areas & quality", "Available · OpenCV CPU"],
-      ["Measurement reports & CSV export", "Available · no model"],
-      ["Saved activity & snapshots", "Available · database"],
-      ["Visual chat", settings.ready ? "Connected" : "Needs tested vision connection"],
-      ["Vision-model detections", settings.ready && settings.monitor_enabled ? "Enabled" : "Not enabled"],
-      ["NVIDIA GPU", hardware.nvidia_gpu || "Not detected"],
-      ["Historical video search", "Not included in this MVP"],
-    ].map(([name, value]) => `<div class="capability"><span>${escapeHtml(name)}</span><span>${escapeHtml(value)}</span></div>`).join("");
-    runtimeFields();
+    runtimeState = await res.json();
+    renderRuntimeActive(); renderRuntimeProfiles(); renderRuntimePipeline(); renderRuntimeCapabilities();
+    if (usageRes.ok) renderRuntimeUsage(await usageRes.json());
+    if (!document.getElementById("runtime-editor").hidden && runtimeEditingId) {
+      const profile = (runtimeState.profiles || []).find(item => item.id === runtimeEditingId);
+      if (profile) fillRuntimeForm(profile);
+    }
   } catch (err) { document.getElementById("runtime-message").textContent = err.message; }
 }
-async function saveRuntime() {
+
+async function saveRuntime(activate = true) {
   const res = await fetch(`${API}/api/runtime`, {method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify({
+    name: document.getElementById("runtime-name").value.trim(),
+    profile_id: runtimeEditingId,
+    create_new: !runtimeEditingId,
+    activate,
     provider: document.getElementById("runtime-provider").value,
     base_url: document.getElementById("runtime-url").value.trim(),
     model: document.getElementById("runtime-model").value.trim(),
@@ -1416,22 +1518,47 @@ async function configureAI(test) {
   const msg = document.getElementById("runtime-message");
   const save = document.getElementById("runtime-save"), testButton = document.getElementById("runtime-test");
   save.disabled = testButton.disabled = true;
-  msg.textContent = test ? "Saving and testing a synthetic image. This may take a moment…" : "Saving…";
+  msg.textContent = test ? "Saving and testing a synthetic image. This may take a moment…" : "Saving setup…";
   try {
-    await saveRuntime();
+    const existing = (runtimeState.profiles || []).find(item => item.id === runtimeEditingId);
+    await saveRuntime(test || !existing || existing.active);
     if (test) {
       const res = await fetch(`${API}/api/runtime/test`, {method:"POST"});
       const data = await res.json();
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Connection test failed.");
       msg.textContent = `${data.message} (${data.seconds}s)`;
-    } else msg.textContent = "Settings saved. Test the connection before using visual chat.";
+    } else { msg.textContent = "Setup saved. Use it from the list when you are ready."; document.getElementById("runtime-editor").hidden = true; }
     await loadRuntime();
     await pollStatus();
+    if (test) document.getElementById("runtime-editor").hidden = true;
   } catch (err) { msg.textContent = err.message; }
   finally { runtimeBusy = false; save.disabled = false; runtimeFields(); }
 }
 document.getElementById("runtime-form").onsubmit = e => { e.preventDefault(); configureAI(false); };
 document.getElementById("runtime-test").onclick = () => configureAI(true);
+document.getElementById("runtime-new").onclick = () => openRuntimeEditor();
+document.getElementById("runtime-cancel").onclick = () => { document.getElementById("runtime-editor").hidden = true; runtimeEditingId = null; };
+document.getElementById("preset-ollama").onclick = () => { document.getElementById("runtime-provider").value = "compatible"; document.getElementById("runtime-url").value = "http://localhost:11434/v1"; document.getElementById("runtime-model").value = "moondream"; runtimeFields(); };
+document.getElementById("preset-llama").onclick = () => { document.getElementById("runtime-provider").value = "compatible"; document.getElementById("runtime-url").value = "http://localhost:8080/v1"; document.getElementById("runtime-model").value = "your-vision-model"; runtimeFields(); };
+document.getElementById("runtime-active-card").onclick = e => { const button = e.target.closest("[data-runtime-action]"); if (!button) return; const profile = (runtimeState.profiles || []).find(item => item.id === button.dataset.profileId); openRuntimeEditor(profile); };
+document.getElementById("runtime-profiles-list").onclick = async e => {
+  const button = e.target.closest("[data-runtime-action]");
+  if (!button) return;
+  const action = button.dataset.runtimeAction, id = button.dataset.profileId;
+  const profile = (runtimeState.profiles || []).find(item => item.id === id);
+  if (action === "new") return openRuntimeEditor();
+  if (action === "edit") return openRuntimeEditor(profile);
+  if (action === "activate") {
+    const res = await fetch(`${API}/api/runtime/profiles/${encodeURIComponent(id)}/activate`, {method:"POST"});
+    if (!res.ok) { document.getElementById("runtime-message").textContent = "Could not activate that setup."; return; }
+    await loadRuntime(); await pollStatus(); return;
+  }
+  if (action === "delete" && profile && confirm(`Delete the ${profile.name} setup?`)) {
+    const res = await fetch(`${API}/api/runtime/profiles/${encodeURIComponent(id)}`, {method:"DELETE"});
+    if (!res.ok) { document.getElementById("runtime-message").textContent = "Could not delete that setup."; return; }
+    await loadRuntime(); await pollStatus();
+  }
+};
 
 /* ---------- init ---------- */
 

@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -18,14 +19,77 @@ from .vlm import VisionLanguageModel
 class VisionRuntime:
     def __init__(self, path=None):
         self.path = Path(path or os.environ.get("ARGUS_RUNTIME_FILE", Path(__file__).resolve().parents[2] / "data" / "runtime.json"))
-        self._settings = {"provider": "none", "base_url": "", "model": "", "api_key": "", "allow_remote": False, "monitor_enabled": False}
+        self._settings = self._default_settings()
+        self._profiles = {}
+        self._active_profile_id = None
         self._verified = False
         self._error = None
         self._lock = threading.RLock()
         self._embedded = VisionLanguageModel()
         self.interactive = threading.Event()
         if self.path.exists():
-            self._settings.update(json.loads(self.path.read_text()))
+            self._load_state(json.loads(self.path.read_text()))
+
+    @staticmethod
+    def _default_settings():
+        return {"provider": "none", "base_url": "", "model": "", "api_key": "", "allow_remote": False, "monitor_enabled": False}
+
+    def _load_state(self, data):
+        # runtime.json used to contain one flat settings object. Read that
+        # format as the first saved setup so upgrades keep the current model.
+        if isinstance(data, dict) and isinstance(data.get("profiles"), list):
+            for raw in data["profiles"]:
+                if not isinstance(raw, dict):
+                    continue
+                profile = {**self._default_settings(), **raw}
+                profile["id"] = str(raw.get("id") or uuid.uuid4().hex[:12])
+                profile["name"] = str(raw.get("name") or self._profile_name(profile))
+                self._profiles[profile["id"]] = profile
+            active = data.get("active_profile_id")
+            if active in self._profiles:
+                self._active_profile_id = active
+                self._settings = self._profile_settings(self._profiles[active])
+            return
+        if isinstance(data, dict):
+            self._settings.update(data)
+            if self._settings.get("provider") != "none":
+                profile = self._new_profile(self._settings, self._profile_name(self._settings), profile_id="default")
+                self._profiles[profile["id"]] = profile
+                self._active_profile_id = profile["id"]
+
+    @staticmethod
+    def _profile_name(settings):
+        if settings.get("provider") == "embedded":
+            return "Embedded Qwen"
+        if settings.get("provider") == "compatible":
+            return settings.get("model") or "Vision API"
+        return "CPU tools only"
+
+    @classmethod
+    def _new_profile(cls, settings, name=None, profile_id=None):
+        return {
+            **cls._default_settings(),
+            **settings,
+            "id": profile_id or f"setup-{uuid.uuid4().hex[:10]}",
+            "name": (name or "").strip() or cls._profile_name(settings),
+            "last_test_status": settings.get("last_test_status", "untested"),
+            "last_tested_at": settings.get("last_tested_at"),
+            "last_test_seconds": settings.get("last_test_seconds"),
+            "last_test_message": settings.get("last_test_message"),
+        }
+
+    @classmethod
+    def _profile_settings(cls, profile):
+        return {key: profile.get(key, default) for key, default in cls._default_settings().items()}
+
+    def _persist(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as out:
+            json.dump({"active_profile_id": self._active_profile_id, "profiles": list(self._profiles.values())}, out)
+        os.chmod(tmp, 0o600)
+        tmp.replace(self.path)
 
     @property
     def ready(self):
@@ -49,11 +113,34 @@ class VisionRuntime:
         # Settings are replaced atomically. Status must not wait behind inference.
         settings = self._settings
         return {**{k: v for k, v in settings.items() if k != "api_key"},
+                "profile_id": self._active_profile_id,
+                "profile_name": self._profiles.get(self._active_profile_id, {}).get("name"),
                 "has_api_key": bool(settings.get("api_key")),
                 "ready": self.ready, "error": self.error, "configured": self.configured}
 
+    def public_profiles(self):
+        profiles = []
+        for profile in self._profiles.values():
+            settings = self._profile_settings(profile)
+            profiles.append({
+                **{k: v for k, v in settings.items() if k != "api_key"},
+                "id": profile["id"],
+                "name": profile.get("name") or self._profile_name(settings),
+                "has_api_key": bool(settings.get("api_key")),
+                "active": profile["id"] == self._active_profile_id,
+                "last_test_status": profile.get("last_test_status", "untested"),
+                "last_tested_at": profile.get("last_tested_at"),
+                "last_test_seconds": profile.get("last_test_seconds"),
+                "last_test_message": profile.get("last_test_message"),
+            })
+        return sorted(profiles, key=lambda item: (not item["active"], item["name"].lower()))
+
     def configure(self, settings):
         settings = dict(settings)
+        profile_id = settings.pop("profile_id", None)
+        create_new = settings.pop("create_new", False)
+        activate = settings.pop("activate", True)
+        name = settings.pop("name", None)
         if settings["provider"] == "compatible":
             url = urlsplit(settings["base_url"])
             if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password or url.query or url.fragment:
@@ -66,21 +153,51 @@ class VisionRuntime:
             if not local and not settings.get("allow_remote"):
                 raise ValueError("Confirm that frames may be sent to the configured server.")
         with self._lock:
+            if not profile_id and not create_new:
+                profile_id = self._active_profile_id
+            existing = self._profiles.get(profile_id) if profile_id else None
             if settings.get("api_key") is None:
-                same_server = settings.get("base_url") == self._settings.get("base_url")
-                settings["api_key"] = self._settings.get("api_key", "") if same_server else ""
+                previous = self._profile_settings(existing) if existing else self._settings
+                same_server = settings.get("base_url") == previous.get("base_url")
+                settings["api_key"] = previous.get("api_key", "") if same_server else ""
             settings["base_url"] = settings["base_url"].rstrip("/")
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as out:
-                json.dump(settings, out)
-            os.chmod(tmp, 0o600)
-            tmp.replace(self.path)
-            self._settings = settings
+            profile = self._new_profile(settings, name or (existing or {}).get("name"), profile_id)
+            if existing and settings == self._profile_settings(existing):
+                for key in ("last_test_status", "last_tested_at", "last_test_seconds", "last_test_message"):
+                    profile[key] = existing.get(key)
+            self._profiles[profile["id"]] = profile
+            if activate or self._active_profile_id is None:
+                self._active_profile_id = profile["id"]
+                self._settings = self._profile_settings(profile)
+                self._verified = False
+                self._error = None
+            self._persist()
+        return self.public_settings()
+
+    def activate(self, profile_id):
+        with self._lock:
+            profile = self._profiles.get(profile_id)
+            if profile is None:
+                raise ValueError("AI setup not found.")
+            self._active_profile_id = profile_id
+            self._settings = self._profile_settings(profile)
             self._verified = False
             self._error = None
-        return self.public_settings()
+            self._persist()
+            return self.public_settings()
+
+    def delete_profile(self, profile_id):
+        with self._lock:
+            if profile_id not in self._profiles:
+                raise ValueError("AI setup not found.")
+            del self._profiles[profile_id]
+            if profile_id == self._active_profile_id:
+                self._active_profile_id = next(iter(self._profiles), None)
+                self._settings = self._profile_settings(self._profiles[self._active_profile_id]) if self._active_profile_id else self._default_settings()
+                self._verified = False
+                self._error = None
+            self._persist()
+            return self.public_settings()
 
     def load(self):
         # No downloads, GPU allocation, or hosted calls without setup.
@@ -93,16 +210,31 @@ class VisionRuntime:
             if self._settings["provider"] == "none":
                 raise ValueError("Choose an AI connection first.")
             started = time.monotonic()
-            if self._settings["provider"] == "embedded":
-                self._embedded.load()
-                response = self._embedded.ask(Image.new("RGB", (64, 64), "red"), "What color is this image?", max_new_tokens=24)
-            else:
-                response = self._remote_ask(Image.new("RGB", (64, 64), "red"), "What color is this image?", max_new_tokens=24)
-            if "red" not in response.lower():
-                raise ValueError("The server responded but did not identify the red test image. Check that the selected model supports vision.")
+            try:
+                if self._settings["provider"] == "embedded":
+                    self._embedded.load()
+                    response = self._embedded.ask(Image.new("RGB", (64, 64), "red"), "What color is this image?", max_new_tokens=24)
+                else:
+                    response = self._remote_ask(Image.new("RGB", (64, 64), "red"), "What color is this image?", max_new_tokens=24)
+                if "red" not in response.lower():
+                    raise ValueError("The server responded but did not identify the red test image. Check that the selected model supports vision.")
+            except (RuntimeError, ValueError) as exc:
+                self._error = str(exc)
+                self._record_test("failed", round(time.monotonic() - started, 1), str(exc))
+                raise
             self._verified = True
             self._error = None
-            return {"ready": True, "seconds": round(time.monotonic() - started, 1), "message": "Vision test passed. Live chat is ready."}
+            seconds = round(time.monotonic() - started, 1)
+            message = "Vision test passed. Live chat is ready."
+            self._record_test("passed", seconds, message)
+            return {"ready": True, "seconds": seconds, "message": message}
+
+    def _record_test(self, status, seconds, message):
+        profile = self._profiles.get(self._active_profile_id)
+        if profile is None:
+            return
+        profile.update({"last_test_status": status, "last_tested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "last_test_seconds": seconds, "last_test_message": message})
+        self._persist()
 
     def ask(self, image, question, max_new_tokens=512, history=None, fps=None, on_token=None):
         with self._lock:

@@ -6,7 +6,7 @@ import time
 import shutil
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -830,6 +830,10 @@ class RuntimeSettings(BaseModel):
     base_url: str = Field(default="", max_length=500)
     model: str = Field(default="", max_length=200)
     api_key: Optional[str] = Field(default=None, max_length=1000)
+    profile_id: Optional[str] = Field(default=None, max_length=80)
+    name: Optional[str] = Field(default=None, max_length=100)
+    create_new: bool = False
+    activate: bool = True
     allow_remote: bool = False
     monitor_enabled: bool = False
 
@@ -837,7 +841,7 @@ class RuntimeSettings(BaseModel):
 @app.get("/api/runtime")
 def get_runtime():
     from .runtime import hardware_profile
-    return {"settings": vlm.public_settings(), "hardware": hardware_profile()}
+    return {"settings": vlm.public_settings(), "hardware": hardware_profile(), "profiles": vlm.public_profiles(), "active_profile_id": vlm.public_settings().get("profile_id")}
 
 
 @app.put("/api/runtime")
@@ -850,6 +854,70 @@ def configure_runtime(payload: RuntimeSettings):
         raise HTTPException(400, str(exc)) from None
     finally:
         _chat_lock.release()
+
+
+@app.post("/api/runtime/profiles/{profile_id}/activate")
+def activate_runtime_profile(profile_id: str):
+    if not _chat_lock.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the current answer before changing AI settings.")
+    try:
+        try:
+            return vlm.activate(profile_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+    finally:
+        _chat_lock.release()
+
+
+@app.delete("/api/runtime/profiles/{profile_id}")
+def delete_runtime_profile(profile_id: str):
+    if not _chat_lock.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the current answer before changing AI settings.")
+    try:
+        try:
+            return vlm.delete_profile(profile_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+    finally:
+        _chat_lock.release()
+
+
+@app.get("/api/runtime/usage")
+def runtime_usage(db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+    rows = db.query(ChatMessage).filter(ChatMessage.role == "assistant").all()
+    day_start = now - timedelta(days=6)
+    counts = {}
+    for offset in range(7):
+        day = (now - timedelta(days=6 - offset)).date()
+        counts[day.isoformat()] = 0
+    for row in rows:
+        created = row.created_at
+        if created is None:
+            continue
+        created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+        if created >= day_start:
+            key = created.date().isoformat()
+            if key in counts:
+                counts[key] += 1
+    recent_24h = 0
+    recent_7d = 0
+    for row in rows:
+        if row.created_at is None:
+            continue
+        created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=timezone.utc)
+        recent_24h += created >= now - timedelta(days=1)
+        recent_7d += created >= now - timedelta(days=7)
+    last_response = max((row.created_at for row in rows if row.created_at), default=None)
+    if last_response and not last_response.tzinfo:
+        last_response = last_response.replace(tzinfo=timezone.utc)
+    return {
+        "total_requests": len(rows),
+        "last_24h": recent_24h,
+        "last_7d": recent_7d,
+        "last_response_at": last_response.isoformat() if last_response else None,
+        "daily": [{"date": key, "requests": value} for key, value in counts.items()],
+    }
 
 
 @app.post("/api/runtime/test")
