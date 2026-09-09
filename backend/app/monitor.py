@@ -18,7 +18,7 @@ from .db import SessionLocal
 from .grounding import build_event_prompt
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, Event
-from .vlm import vlm
+from .runtime import vlm
 
 log = logging.getLogger("qwenvl.monitor")
 
@@ -123,6 +123,8 @@ class EventMonitor:
             self._log_event(db, cam, "warning", "Camera went offline", "", None)
 
     def _check_camera(self, db, cam: Camera):
+        if vlm.interactive.is_set() or not vlm.monitor_enabled:
+            return
         feed = registry.get(cam.id)
         if feed is None:
             return
@@ -136,7 +138,10 @@ class EventMonitor:
         if prev_gray is None:
             return  # first sighting of this camera - nothing to diff against yet
 
-        if _motion_score(prev_gray, gray) < MONITOR_MOTION_THRESHOLD:
+        pending = self._pending.get(cam.id, {})
+        confirmed = self._confirmed.get(cam.id, {})
+        needs_confirmation = any(value != confirmed.get(key, False) for key, value in pending.items())
+        if not needs_confirmation and _motion_score(prev_gray, gray) < MONITOR_MOTION_THRESHOLD:
             return
 
         now = time.monotonic()
@@ -162,7 +167,10 @@ class EventMonitor:
             return
 
         parsed = _parse_event_json(raw)
-        if parsed is None:
+        if not isinstance(parsed, dict) or any(
+            not isinstance(parsed.get(key), bool)
+            for key in ("person_present", "vehicle_present", "weapon_visible")
+        ) or not isinstance(parsed.get("custom_matches", []), list):
             log.warning("Could not parse event JSON for %s: %r", cam.name, raw)
             return
 
@@ -180,31 +188,20 @@ class EventMonitor:
         prev_raw = self._pending.get(cam.id)
         self._pending[cam.id] = new_raw
 
-        # Compare only keys seen on both the previous and current reading:
-        # the rule set can change between ticks (a rule added/edited/
-        # toggled/deleted), which changes new_raw's key shape even though
-        # nothing about the scene changed. Comparing full dicts would treat
-        # that as "not confirmed yet" and delay every alert by an extra tick
-        # whenever a rule is touched.
-        prev_keys = prev_raw.keys() if prev_raw is not None else set()
-        common_keys = new_raw.keys() & prev_keys
-        new_keys = new_raw.keys() - prev_keys
-
-        if prev_raw is None or any(new_raw[k] != prev_raw[k] for k in common_keys):
-            return  # not held steady across two consecutive readings yet
+        if prev_raw is None:
+            return  # Each flag needs two actual readings, even without new motion.
 
         summary = str(parsed.get("summary") or "").strip()
-        confirmed = self._confirmed.get(cam.id, {})
+        confirmed = dict(self._confirmed.get(cam.id, {}))
         rules_by_id = {r.id: r for r in rules}
         snapshot = None  # built lazily - only if something is actually logged
 
         for key, value in new_raw.items():
-            if key in new_keys:
-                # This key (almost always a just-added/enabled rule) has no
-                # prior reading of its own yet — seed it below instead of
-                # logging off a single, undebounced sample.
+            if key not in prev_raw or prev_raw[key] != value:
                 continue
-            if confirmed.get(key, False) == value:
+            previous = confirmed.get(key, False)
+            confirmed[key] = value
+            if previous == value:
                 continue
             label = self._transition_label(key, value, rules_by_id)
             if label is None:
@@ -214,11 +211,7 @@ class EventMonitor:
                 snapshot = image_to_data_uri(img)
             self._log_event(db, cam, severity, category, summary, snapshot)
 
-        # new_raw already carries every key (built-ins + all currently
-        # enabled rules) at its current value, so this seeds new_keys at
-        # their real reading rather than a spurious False, without a
-        # separate merge step.
-        self._confirmed[cam.id] = new_raw
+        self._confirmed[cam.id] = {key: value for key, value in confirmed.items() if key in new_raw}
 
     def _transition_label(self, key: str, value: bool, rules_by_id: dict):
         if key.startswith("rule:"):

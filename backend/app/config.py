@@ -76,7 +76,12 @@ SEED_CAMERAS = [
     },
 ]
 
-SUGGESTED_PROMPTS = []
+SUGGESTED_PROMPTS = [
+    "What is happening right now?",
+    "Describe the people and visible objects.",
+    "What changed in the recent frames?",
+    "Which cameras are online?",
+]
 
 # ---- Background event monitor ----
 # Motion-gated, rate-limited VLM classification per camera, logged only on

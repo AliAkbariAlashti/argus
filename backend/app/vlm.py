@@ -28,6 +28,9 @@ class VisionLanguageModel:
             import torch
             from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 
+            if not torch.cuda.is_available():
+                raise RuntimeError("Embedded Qwen requires an NVIDIA GPU. Connect a local or hosted vision server in AI setup.")
+
             log.info("Loading %s ...", MODEL_ID)
             self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 MODEL_ID,
@@ -83,6 +86,7 @@ class VisionLanguageModel:
         max_new_tokens: int = 512,
         history: list[dict] | None = None,
         fps: float | None = None,
+        on_token=None,
     ) -> str:
         """`history` is prior turns as [{"role": "user"|"assistant", "text": ...}].
         Only the current turn carries images — replaying old frames would grow
@@ -175,7 +179,21 @@ class VisionLanguageModel:
             inputs = inputs.to(self._model.device)
 
             try:
-                generated = self._model.generate(**inputs, max_new_tokens=max_new_tokens)
+                generation_options = {}
+                if on_token is not None:
+                    from transformers import TextStreamer
+
+                    class CallbackStreamer(TextStreamer):
+                        def on_finalized_text(self, text, stream_end=False):
+                            if text:
+                                on_token(text)
+
+                    generation_options["streamer"] = CallbackStreamer(
+                        self._processor.tokenizer, skip_prompt=True, skip_special_tokens=True
+                    )
+                generated = self._model.generate(
+                    **inputs, max_new_tokens=max_new_tokens, **generation_options
+                )
                 trimmed = [
                     out[len(inp):] for inp, out in zip(inputs.input_ids, generated)
                 ]
