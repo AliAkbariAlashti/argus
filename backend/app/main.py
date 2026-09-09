@@ -1,5 +1,8 @@
 import asyncio
+import base64
 import logging
+import json
+import time
 import shutil
 import threading
 import uuid
@@ -11,10 +14,11 @@ from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .camera import registry
+from .cpu import CpuSettings, cpu_monitor, events_csv
 from .config import (
     CHAT_FRAMES_SINGLE_CAMERA,
     CHAT_HISTORY_TURNS,
@@ -24,7 +28,7 @@ from .config import (
     SUGGESTED_PROMPTS,
     VIDEOS_DIR,
 )
-from .db import Base, engine, get_db
+from .db import Base, engine, get_db, SessionLocal
 from .grounding import (
     build_fleet_prompt,
     build_grounded_prompt,
@@ -33,14 +37,14 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AlertRule, Camera, ChatMessage, Event
+from .models import AlertRule, Camera, ChatMessage, Event, CpuConfig
 from .monitor import monitor
-from .vlm import vlm
+from .runtime import vlm
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("qwenvl.main")
 
-app = FastAPI(title="Sentinel Vision API")
+app = FastAPI(title="Argus Video Intelligence")
 
 app.add_middleware(
     CORSMiddleware,
@@ -82,10 +86,12 @@ def on_startup():
     _seed_and_start_cameras()
     threading.Thread(target=vlm.load, daemon=True).start()
     monitor.start()
+    cpu_monitor.start()
 
 
 @app.on_event("shutdown")
 def on_shutdown():
+    cpu_monitor.stop()
     registry.stop_all()
     monitor.stop()
 
@@ -95,6 +101,8 @@ async def status():
     return {
         "model_ready": vlm.ready,
         "model_error": vlm.error,
+        "configured": vlm.configured,
+        "provider": vlm.public_settings()["provider"],
     }
 
 
@@ -137,7 +145,7 @@ def health(db: Session = Depends(get_db)):
 
     return {
         "model": {
-            "id": MODEL_ID,
+            "id": vlm.public_settings().get("model") or (MODEL_ID if vlm.public_settings()["provider"] == "embedded" else "Not configured"),
             "ready": vlm.ready,
             "error": vlm.error,
         },
@@ -255,6 +263,8 @@ def delete_camera(cam_id: str, db: Session = Depends(get_db)):
         video_path = VIDEOS_DIR / camera.source_path
         video_path.unlink(missing_ok=True)
 
+    db.query(CpuConfig).filter(CpuConfig.camera_id == cam_id).delete()
+    cpu_monitor.reset(cam_id)
     db.delete(camera)
     db.commit()
     return {"deleted": cam_id}
@@ -281,6 +291,49 @@ def list_events(
         query = query.filter(Event.summary.ilike(like) | Event.category.ilike(like))
     rows = query.limit(min(limit, 500)).all()
     return [r.to_dict() for r in rows]
+
+
+@app.get("/api/events/export")
+def export_events(camera_id: Optional[str] = None, severity: Optional[str] = None, q: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(Event).order_by(Event.id.desc())
+    if camera_id:
+        query = query.filter(Event.camera_id == camera_id)
+    if severity:
+        query = query.filter(Event.severity == severity)
+    if q:
+        query = query.filter(Event.summary.ilike(f"%{q}%") | Event.category.ilike(f"%{q}%"))
+    content = events_csv(query.limit(5000).all())
+    return Response(content=content, media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="argus-events.csv"'})
+
+
+@app.get("/api/cpu")
+def cpu_status(db: Session = Depends(get_db)):
+    configs = {row.camera_id: row.settings for row in db.query(CpuConfig).all()}
+    return [{"camera_id": cam.id, "name": cam.name,
+             "settings": CpuSettings(**configs.get(cam.id, {})).model_dump(),
+             "status": cpu_monitor.status(cam.id)} for cam in db.query(Camera).order_by(Camera.created_at).all()]
+
+
+@app.put("/api/cpu/{camera_id}")
+def configure_cpu(camera_id: str, payload: CpuSettings, db: Session = Depends(get_db)):
+    if db.get(Camera, camera_id) is None:
+        raise HTTPException(404, "Camera not found")
+    row = db.get(CpuConfig, camera_id)
+    if row is None:
+        row = CpuConfig(camera_id=camera_id)
+        db.add(row)
+    row.settings = payload.model_dump()
+    db.commit()
+    cpu_monitor.reset(camera_id)
+    return row.settings
+
+
+@app.get("/api/cpu/{camera_id}/snapshot")
+def cpu_snapshot(camera_id: str):
+    jpeg = cpu_monitor.snapshot(camera_id)
+    if jpeg is None:
+        raise HTTPException(503, "No current CPU analysis frame. Enable CPU tools and wait for a sample.")
+    return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 # ---------- Alert rules ----------
@@ -345,7 +398,7 @@ async def _mjpeg_generator(cam_id: str):
     if feed is None:
         return
     boundary = b"--frame"
-    while True:
+    while feed.running and registry.get(cam_id) is feed:
         jpeg = feed.get_jpeg()
         if jpeg is not None:
             yield (
@@ -434,7 +487,8 @@ def _save_turn(db: Session, role: str, text: str, cameras_used=None, snapshot=No
 
 
 class ChatRequest(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=2000)
+    scope: str = Field(default="auto", pattern="^(auto|camera|fleet|cpu)$")
     focused_camera_id: Optional[str] = None
 
 
@@ -446,21 +500,64 @@ def chat_history(db: Session = Depends(get_db)):
 
 @app.delete("/api/chat/history")
 def clear_chat_history(db: Session = Depends(get_db)):
-    deleted = db.query(ChatMessage).delete()
-    db.commit()
-    return {"deleted": deleted}
+    if not _chat_lock.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the current answer before clearing the conversation.")
+    try:
+        deleted = db.query(ChatMessage).delete()
+        db.commit()
+        return {"deleted": deleted}
+    finally:
+        _chat_lock.release()
 
 
-@app.post("/api/chat")
-def chat(req: ChatRequest, db: Session = Depends(get_db)):
+def _answer_chat(req: ChatRequest, db: Session, on_token=None):
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Please enter a question.")
     all_cameras = db.query(Camera).order_by(Camera.created_at).all()
     if not all_cameras:
         raise HTTPException(status_code=400, detail="No cameras configured yet.")
 
+    if req.scope == "cpu":
+        selected = [c for c in all_cameras if c.id == req.focused_camera_id] if req.focused_camera_id else all_cameras
+        if not selected:
+            raise HTTPException(400, "Select an available source.")
+        lines = ["CPU measurements (OpenCV; no vision model):"]
+        snapshot = None
+        for cam in selected:
+            config = db.get(CpuConfig, cam.id)
+            enabled = CpuSettings(**(config.settings if config else {})).enabled
+            state = cpu_monitor.status(cam.id)
+            if not enabled:
+                lines.append(f"{cam.name}: CPU analysis is disabled.")
+            elif state.get("warming_up") or not state.get("online"):
+                lines.append(f"{cam.name}: {state.get('message', 'Waiting for the first CPU samples.')}")
+            else:
+                lines.append(f"{cam.name}: motion {'above' if state['motion'] else 'below'} the configured trigger; {state['motion_percent']}% changed pixels in the watch area. Brightness {state['brightness']}/255; edge-detail score {state['sharpness']}. Sample time: {state['checked_at']}.")
+                if state["low_light"]:
+                    lines.append("Low-light indicator is active.")
+                if state["low_detail"]:
+                    lines.append("Low-detail indicator is active; this can be blur or a plain scene.")
+                if snapshot is None:
+                    jpeg = cpu_monitor.snapshot(cam.id)
+                    if jpeg:
+                        snapshot = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        lines.append("These measurements do not identify people, objects, or behaviour. Choose a vision-model mode for scene descriptions.")
+        answer = "\n\n".join(lines)
+        used = [c.id for c in selected]
+        _save_turn(db, "user", req.question)
+        _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
+        return {"question": req.question, "answer": answer, "scope": "cpu", "cameras_used": used, "snapshot": snapshot}
+
     history = _recent_history(db)
-    _save_turn(db, "user", req.question)
 
     scope, camera = route_question(req.question, all_cameras, req.focused_camera_id)
+    if req.scope == "fleet" and scope != "metadata":
+        scope, camera = "fleet", None
+    elif req.scope == "camera" and scope != "metadata":
+        camera = next((c for c in all_cameras if c.id == req.focused_camera_id), None)
+        if camera is None:
+            raise HTTPException(status_code=400, detail="Select a camera first.")
+        scope = "camera"
     log.info("Chat scope=%s camera=%s q=%r", scope, camera.name if camera else "-", req.question)
 
     # Answerable from the database alone — no vision needed, and no chance
@@ -469,6 +566,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
         camera_dicts = [_camera_out(c) for c in all_cameras]
         answer = metadata_answer(req.question, camera_dicts)
         used = [c["id"] for c in camera_dicts]
+        _save_turn(db, "user", req.question)
         _save_turn(db, "assistant", answer, cameras_used=used)
         return {
             "question": req.question,
@@ -480,7 +578,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
     if not vlm.ready:
         raise HTTPException(
             status_code=503,
-            detail=vlm.error or "Model is still loading, please wait a moment.",
+            detail=vlm.error or "Open AI setup to configure and test a vision model. Camera viewing works without AI.",
         )
 
     # One current frame from every camera that has one.
@@ -515,6 +613,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
 
         used = [c.id for c in used_cameras]
         snapshot = image_to_data_uri(images[snapshot_index])
+        _save_turn(db, "user", req.question)
         _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
         return {
             "question": req.question,
@@ -537,12 +636,14 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
             grounded_question,
             history=history,
             fps=1.0 / MOTION_BUFFER_SECONDS,
+            on_token=on_token,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("Inference failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
     snapshot = image_to_data_uri(images[-1])
+    _save_turn(db, "user", req.question)
     _save_turn(db, "assistant", answer, cameras_used=[camera.id], snapshot=snapshot)
     return {
         "question": req.question,
@@ -551,6 +652,122 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
         "snapshot": snapshot,
         "scope": scope,
     }
+
+
+# One conversation and one GPU: reject overlapping questions instead of
+# silently building an unbounded queue or interleaving conversation turns.
+_chat_lock = threading.Lock()
+
+
+@app.post("/api/chat")
+def chat(req: ChatRequest, db: Session = Depends(get_db)):
+    if not _chat_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="An answer is already in progress. Please wait.")
+    vlm.interactive.set()
+    try:
+        return _answer_chat(req, db)
+    finally:
+        vlm.interactive.clear()
+        _chat_lock.release()
+
+
+@app.post("/api/chat/stream")
+async def stream_chat(req: ChatRequest):
+    if not _chat_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="An answer is already in progress. Please wait.")
+    vlm.interactive.set()
+    loop = asyncio.get_running_loop()
+    messages = asyncio.Queue()
+    disconnected = threading.Event()
+
+    def emit(kind, payload):
+        if not disconnected.is_set() and not loop.is_closed():
+            loop.call_soon_threadsafe(messages.put_nowait, (kind, payload))
+
+    def work():
+        started = time.monotonic()
+        try:
+            with SessionLocal() as db:
+                result = _answer_chat(req, db, on_token=lambda token: emit("token", {"text": token}))
+            result["elapsed_seconds"] = round(time.monotonic() - started, 1)
+            emit("answer", result)
+        except HTTPException as exc:
+            emit("error", {"detail": exc.detail})
+        except Exception:
+            log.exception("Streaming chat failed")
+            emit("error", {"detail": "Analysis failed. Check system health and try again."})
+        finally:
+            vlm.interactive.clear()
+            _chat_lock.release()
+            emit("done", {})
+
+    async def events():
+        try:
+            yield 'event: status\ndata: {"text":"Reading camera frames and waiting for the analyst…"}\n\n'
+            while True:
+                try:
+                    kind, payload = await asyncio.wait_for(messages.get(), timeout=10)
+                except asyncio.TimeoutError:
+                    yield ': keepalive\n\n'
+                    continue
+                yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+                if kind == "done":
+                    break
+        finally:
+            disconnected.set()
+
+    # The worker owns its DB session and lock through completion, even if
+    # the browser disconnects. It never holds a request-scoped session.
+    try:
+        threading.Thread(target=work, daemon=True).start()
+    except Exception:
+        vlm.interactive.clear()
+        _chat_lock.release()
+        raise
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+    })
+
+
+class RuntimeSettings(BaseModel):
+    provider: str = Field(pattern="^(none|compatible|embedded)$")
+    base_url: str = Field(default="", max_length=500)
+    model: str = Field(default="", max_length=200)
+    api_key: Optional[str] = Field(default=None, max_length=1000)
+    allow_remote: bool = False
+    monitor_enabled: bool = False
+
+
+@app.get("/api/runtime")
+def get_runtime():
+    from .runtime import hardware_profile
+    return {"settings": vlm.public_settings(), "hardware": hardware_profile()}
+
+
+@app.put("/api/runtime")
+def configure_runtime(payload: RuntimeSettings):
+    if not _chat_lock.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the current answer before changing AI settings.")
+    try:
+        return vlm.configure(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        _chat_lock.release()
+
+
+@app.post("/api/runtime/test")
+def test_runtime():
+    if not _chat_lock.acquire(blocking=False):
+        raise HTTPException(409, "An answer or connection test is already running.")
+    vlm.interactive.set()
+    try:
+        return vlm.test()
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        vlm.interactive.clear()
+        _chat_lock.release()
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
