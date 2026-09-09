@@ -15,6 +15,7 @@ from .camera import registry
 from .db import SessionLocal
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, CpuConfig, Event
+from .tracking import ObjectTracker
 
 log = logging.getLogger("argus.cpu")
 
@@ -49,6 +50,19 @@ class WatchArea(BaseModel):
         return self
 
 
+class TrackingLine(BaseModel):
+    x1: float = Field(default=0.5, ge=0, le=1)
+    y1: float = Field(default=0.1, ge=0, le=1)
+    x2: float = Field(default=0.5, ge=0, le=1)
+    y2: float = Field(default=0.9, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def not_a_point(self):
+        if abs(self.x1 - self.x2) + abs(self.y1 - self.y2) < 0.01:
+            raise ValueError("Tracking line needs two different points.")
+        return self
+
+
 class CpuSettings(BaseModel):
     enabled: bool = True
     motion_alerts: bool = True
@@ -56,12 +70,17 @@ class CpuSettings(BaseModel):
     face_alerts: bool = False
     people_alerts: bool = False
     object_alerts: bool = False
+    tracking_enabled: bool = False
+    line_crossing_alerts: bool = False
+    dwell_alerts: bool = False
     motion_threshold: float = Field(default=0.02, ge=0.001, le=0.8)
     cooldown_seconds: int = Field(default=30, ge=5, le=3600)
     dark_threshold: int = Field(default=25, ge=1, le=150)
     blur_threshold: float = Field(default=30, ge=1, le=1000)
     object_confidence: float = Field(default=0.4, ge=0.1, le=0.95)
+    dwell_seconds: int = Field(default=600, ge=10, le=86400)
     area: WatchArea = Field(default_factory=WatchArea)
+    line: TrackingLine = Field(default_factory=TrackingLine)
 
 
 def detect_faces(gray):
@@ -149,11 +168,18 @@ def annotate(frame, result, settings):
         start, end = (int(x * width), int(y * height)), (int((x + w) * width) - 1, int((y + h) * height) - 1)
         cv2.rectangle(image, start, end, (0, 0, 0), 4)
         cv2.rectangle(image, start, end, (255, 255, 255), 1)
-        label = f"{obj['class']} {obj['confidence']:.2f}"
+        track_label = f" · T{obj['track_id']} · {obj['dwell_seconds']:.0f}s" if "track_id" in obj else ""
+        label = f"{obj['class']} {obj['confidence']:.2f}{track_label}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         label_start = (start[0], max(0, start[1] - th - 6))
         cv2.rectangle(image, label_start, (start[0] + tw + 6, start[1]), (0, 0, 0), -1)
         cv2.putText(image, label, (start[0] + 3, start[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    if settings.tracking_enabled or settings.line_crossing_alerts:
+        line = settings.line
+        start = (int(line.x1 * width), int(line.y1 * height))
+        end = (int(line.x2 * width), int(line.y2 * height))
+        cv2.line(image, start, end, (0, 0, 0), 6, cv2.LINE_AA)
+        cv2.line(image, start, end, (255, 255, 255), 2, cv2.LINE_AA)
     return image
 
 
@@ -170,6 +196,7 @@ class CpuMonitor:
         # for the most recent row in the current uninterrupted run of that
         # detection — lets a higher-confidence repeat steal the snapshot.
         self._active_runs = {}
+        self._tracker = ObjectTracker()
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -190,6 +217,7 @@ class CpuMonitor:
             self._generation[camera_id] = self._generation.get(camera_id, 0) + 1
             for run_key in [k for k in self._active_runs if k[0] == camera_id]:
                 self._active_runs.pop(run_key, None)
+            self._tracker.reset(camera_id)
 
     def status(self, camera_id):
         with self._lock:
@@ -253,7 +281,7 @@ class CpuMonitor:
         )
         return rule.severity if rule else "info"
 
-    def _log_detection_row(self, db, camera_id, category, severity, summary, drawn, confidence=None):
+    def _log_detection_row(self, db, camera_id, category, severity, summary, drawn, confidence=None, deduplicate=True):
         """Every detection sample becomes a row here — no gating, no cooldown.
         Rules (and their severity) are a property of the row, not a gate on
         whether it exists. Within a back-to-back run of the same
@@ -263,8 +291,8 @@ class CpuMonitor:
         which have no per-sample accuracy score to compare) — the rest log
         without a snapshot to bound storage growth."""
         run_key = (camera_id, category)
-        run = self._active_runs.get(run_key)
-        if run is None:
+        run = self._active_runs.get(run_key) if deduplicate else None
+        if not deduplicate or run is None:
             keep_snapshot = True
         elif confidence is not None and run["confidence"] is not None:
             keep_snapshot = confidence > run["confidence"]
@@ -277,24 +305,42 @@ class CpuMonitor:
         db.flush()  # assign event.id without a full commit
         if keep_snapshot and run is not None:
             db.query(Event).filter(Event.id == run["event_id"]).update({"snapshot": None})
-        self._active_runs[run_key] = {"event_id": event.id, "confidence": confidence}
+        if deduplicate:
+            self._active_runs[run_key] = {"event_id": event.id, "confidence": confidence}
 
     def process(self, db, camera, frame, settings):
         started = time.monotonic()
         with self._lock:
             generation = self._generation.get(camera.id, 0)
             old = self._states.get(camera.id)
-            if self._settings.get(camera.id) != settings.model_dump():
-                old = None
+        if self._settings.get(camera.id) != settings.model_dump():
+            old = None
+            self._tracker.reset(camera.id)
         previous = old["gray"] if old else None
         tick = (old["tick"] + 1) if old else 0
         run_detectors = tick % _DETECT_EVERY_N_TICKS == 0
         result, gray = measure(frame, previous, settings, run_detectors=run_detectors)
         if not run_detectors and old and "result" in old:
             # Carry the last detector reading forward between the heavier detection ticks.
-            for key in ("face_count", "face_boxes", "people_count", "people_boxes", "objects"):
+            for key in ("face_count", "face_boxes", "people_count", "people_boxes", "objects", "tracked_objects", "tracked_counts", "line_crossings", "line_crossings_total"):
                 if key in old["result"]:
                     result[key] = old["result"][key]
+        if run_detectors and settings.tracking_enabled and settings.object_alerts:
+            tracked, tracked_counts, crossings, dwell_events = self._tracker.update(
+                camera.id,
+                result.get("objects", []),
+                time.time(),
+                settings.line.model_dump() if settings.line_crossing_alerts else None,
+                settings.dwell_seconds if settings.dwell_alerts else None,
+            )
+            result.update({
+                "tracked_objects": tracked,
+                "tracked_counts": tracked_counts,
+                "line_crossings": crossings,
+                "line_crossings_total": self._tracker.counts(camera.id)["total"],
+            })
+        else:
+            dwell_events = []
         streaks = dict(old["streaks"]) if old else {}
         active = dict(old["active"]) if old else {}
         last_event = dict(old["last_event"]) if old else {}
@@ -347,6 +393,16 @@ class CpuMonitor:
                         self._log_detection_row(db, camera.id, category, severity, summary, drawn, confidence=obj["confidence"])
                         seen_categories.add(category)
                         wrote_anything = True
+                for crossing in result.get("line_crossings", []):
+                    category = f"CPU · {crossing['class'].title()} crossed {crossing['direction']}"
+                    severity = self._resolve_object_severity(db, camera.id, crossing["class"])
+                    self._log_detection_row(db, camera.id, category, severity, summary, drawn, deduplicate=False)
+                    wrote_anything = True
+                for dwell in dwell_events:
+                    category = f"CPU · {dwell['class'].title()} stayed {dwell['dwell_seconds']:.0f}s"
+                    severity = self._resolve_object_severity(db, camera.id, dwell["class"])
+                    self._log_detection_row(db, camera.id, category, severity, summary, drawn, deduplicate=False)
+                    wrote_anything = True
                 # A category not detected on this detector tick has ended its
                 # run — clear it so the next occurrence starts fresh (gets a
                 # snapshot) instead of being compared against a stale run.
@@ -375,3 +431,15 @@ def events_csv(events):
 
 
 cpu_monitor = CpuMonitor()
+
+
+def health():
+    """Report whether each CPU analysis dependency is usable on this host."""
+    return {
+        "opencv": {
+            "available": True,
+            "version": cv2.__version__,
+            "objdetect_available": _OBJDETECT_AVAILABLE,
+        },
+        "onnxruntime": yolo.health(),
+    }

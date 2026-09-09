@@ -62,6 +62,27 @@ def available():
     return _session is not None
 
 
+def health():
+    """Return the local object-detection dependency status for the UI."""
+    _load()
+    try:
+        import onnxruntime as ort
+        runtime_version = ort.__version__
+    except Exception as exc:  # noqa: BLE001
+        runtime_version = None
+        if _load_error is None:
+            return {"available": False, "runtime_version": None, "model_present": MODEL_PATH.exists(), "error": str(exc)}
+    return {
+        "available": _session is not None,
+        "runtime_version": runtime_version,
+        "model_present": MODEL_PATH.exists(),
+        "model_path": str(MODEL_PATH),
+        "model_size_mb": round(MODEL_PATH.stat().st_size / (1024 * 1024), 1) if MODEL_PATH.exists() else None,
+        "providers": _session.get_providers() if _session is not None else [],
+        "error": _load_error,
+    }
+
+
 def _letterbox(frame):
     """Resize+pad to a square INPUT_SIZE canvas, preserving aspect ratio."""
     h, w = frame.shape[:2]
@@ -101,12 +122,16 @@ def detect(frame, conf_threshold=0.4, iou_threshold=0.45):
     class_ids = class_ids[keep]
     confidences = confidences[keep]
 
-    # Center xywh (in letterboxed-canvas pixels) -> corner xyxy for NMS.
+    # Center xywh (in letterboxed-canvas pixels) -> corner xyxy for output.
     cx, cy, bw, bh = boxes_xywh[:, 0], boxes_xywh[:, 1], boxes_xywh[:, 2], boxes_xywh[:, 3]
     boxes_xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], axis=1)
+    # OpenCV's NMSBoxes API expects [x, y, width, height], even though the
+    # model output and the result API use center-xywh and corner-xyxy at
+    # different points in this function.
+    boxes_for_nms = np.stack([boxes_xyxy[:, 0], boxes_xyxy[:, 1], bw, bh], axis=1)
 
     indices = cv2.dnn.NMSBoxes(
-        boxes_xyxy.tolist(), confidences.tolist(), conf_threshold, iou_threshold
+        boxes_for_nms.tolist(), confidences.tolist(), conf_threshold, iou_threshold
     )
     if len(indices) == 0:
         return []

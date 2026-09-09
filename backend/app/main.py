@@ -20,7 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .camera import registry
-from .cpu import CpuSettings, cpu_monitor, events_csv
+from .cpu import CpuSettings, cpu_monitor, events_csv, health as cpu_health
 from .config import (
     CHAT_FRAMES_SINGLE_CAMERA,
     CHAT_HISTORY_TURNS,
@@ -384,6 +384,11 @@ def cpu_status(db: Session = Depends(get_db)):
     return [{"camera_id": cam.id, "name": cam.name,
              "settings": CpuSettings(**configs.get(cam.id, {})).model_dump(),
              "status": cpu_monitor.status(cam.id)} for cam in db.query(Camera).order_by(Camera.created_at).all()]
+
+
+@app.get("/api/cpu/health")
+def cpu_dependencies_health():
+    return cpu_health()
 
 
 @app.put("/api/cpu/{camera_id}")
