@@ -180,12 +180,12 @@
       <!-- ============ ALERTS (event dashboard) ============ -->
       <section class="view" id="view-alerts" hidden>
         <div class="events-page">
-          <div class="events-header">
-            <span>Event log</span>
-            <span class="events-sub">Automatic detections from the background monitor — not user questions.</span>
+          <div class="events-header activity-header">
+            <div><span>Activity command center</span><span class="events-sub">Live detections, camera health, and operator review in one place.</span></div>
+            <div class="activity-live-controls"><span id="events-live-state" class="live-state"><span class="live-dot"></span> LIVE</span><button class="btn-ghost" id="events-live-toggle" type="button">Pause stream</button><span id="events-last-updated" class="events-sub">Waiting for events…</span></div>
           </div>
 
-          <div class="events-charts" id="events-charts"></div>
+          <div class="activity-kpis" id="events-kpis"></div>
 
           <form id="history-ask-form" class="history-ask">
             <input type="text" id="history-ask-input" placeholder='Ask about history — e.g. "when did you last see a person on Server Room"' />
@@ -193,20 +193,22 @@
           </form>
           <div id="history-ask-answer" class="history-ask-answer" role="status" hidden></div>
 
-          <div class="events-toolbar"><button class="btn-ghost" id="export-events">Export CSV ↓</button>
-            <input type="text" id="events-search" class="events-search" placeholder="Search events…" />
-            <select id="events-camera-filter" class="events-select">
-              <option value="">All sources</option>
-            </select>
-            <select id="events-severity-filter" class="events-select">
-              <option value="">All severities</option>
-              <option value="critical">Critical</option>
-              <option value="warning">Warning</option>
-              <option value="info">Info</option>
-            </select>
+          <div class="activity-dashboard-grid">
+            <main class="activity-stream-panel">
+              <div class="activity-panel-heading"><div><span>Live event stream</span><span class="events-sub">Newest events appear first. Select a snapshot to inspect evidence.</span></div><span id="events-stream-count" class="events-sub"></span></div>
+              <div class="events-toolbar"><button class="btn-ghost" id="export-events">Export CSV ↓</button><button class="btn-ghost" id="events-mark-seen" type="button">Mark reviewed</button><button class="btn-ghost" id="events-clear-filters" type="button">Clear filters</button>
+                <input type="text" id="events-search" class="events-search" placeholder="Search events…" />
+                <select id="events-camera-filter" class="events-select"><option value="">All sources</option></select>
+                <select id="events-severity-filter" class="events-select"><option value="">All severities</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Info</option></select>
+              </div>
+              <div class="events-list" id="events-list"></div>
+            </main>
+            <aside class="activity-sidebar">
+              <div class="activity-sidebar-heading"><span>Stream overview</span><span class="events-sub">Current filter window</span></div>
+              <div class="events-charts" id="events-charts"></div>
+              <div class="activity-management"><span class="activity-management-title">Operator tools</span><button class="btn-ghost" id="events-focus-critical" type="button">Show critical only</button><button class="btn-ghost" id="events-focus-recent" type="button">Last 30 events</button><p class="events-sub">Use filters to narrow the stream. Mark reviewed updates this browser's activity badge.</p></div>
+            </aside>
           </div>
-
-          <div class="events-list" id="events-list"></div>
         </div>
       </section>
 
@@ -265,12 +267,13 @@
 
       <section class="view" id="view-cpu" hidden>
         <div class="cpu-page">
-          <div class="page-heading"><div><div class="eyebrow">OPENCV · NO MODEL REQUIRED</div><h1>Intelligence starts here.</h1><p>Measure motion, watch an area, and check image quality on your CPU.</p></div><a class="guide-link" href="/docs/#cpu">How CPU analysis works ↗</a></div>
+          <div class="page-heading"><div><div class="eyebrow">CPU ANALYSIS · NO GPU REQUIRED</div><h1>Intelligence starts here.</h1><p>Measure motion, watch an area, and check image quality on your CPU.</p></div><a class="guide-link" href="/docs/#cpu">How CPU analysis works ↗</a></div>
           <div class="cpu-toolbar"><label for="cpu-camera">Source</label><select id="cpu-camera" class="events-select"></select><span id="cpu-engine-state" role="status">Loading CPU measurements…</span></div>
+          <div class="cpu-health" id="cpu-health" aria-live="polite"><span class="cpu-health-title">CPU stack</span><span class="cpu-health-loading">Checking OpenCV and ONNX Runtime…</span></div>
           <div class="cpu-metrics" id="cpu-metrics"></div>
           <div class="cpu-layout">
             <div class="cpu-visual"><div class="section-heading"><h2>Watch area &amp; motion regions</h2><button class="btn-ghost" id="cpu-download">Save snapshot ↓</button></div>
-              <div class="cpu-frame"><img id="cpu-preview" alt="CPU analysis preview with watch area and motion regions" /><svg id="cpu-zone-editor" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Drag to choose a watch area"><rect id="cpu-zone-rect" x="0" y="0" width="100" height="100" /></svg><div id="cpu-preview-message">Waiting for a source…</div></div>
+              <div class="cpu-frame"><img id="cpu-preview" alt="CPU analysis preview with watch area and motion regions" /><svg id="cpu-zone-editor" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Drag to choose a watch area"><rect id="cpu-zone-rect" x="0" y="0" width="100" height="100" /><line id="cpu-line" x1="50" y1="10" x2="50" y2="90" /></svg><div id="cpu-preview-message">Waiting for a source…</div></div>
               <p class="cpu-hint">Drag over the image to set a rectangular watch area, or enter percentages. Dashed line: your pending area. Solid lines: saved area and measured motion regions. Save to apply.</p>
               <div class="cpu-spark-heading"><span>Recent motion</span><span>Last 60 samples · this browser session</span></div><div id="cpu-spark" class="cpu-spark" aria-label="Recent motion percentage"></div>
             </div>
@@ -281,12 +284,16 @@
               <label class="check-field"><input type="checkbox" id="cpu-face-alerts" /> Detect faces (Haar cascade) and save events</label>
               <label class="check-field"><input type="checkbox" id="cpu-people-alerts" /> Detect people (HOG pedestrian detector) and save events</label>
               <label class="check-field"><input type="checkbox" id="cpu-object-alerts" /> Detect objects (person, car, backpack, and 77 more — powers CPU alert rules)</label>
+              <label class="check-field"><input type="checkbox" id="cpu-tracking-enabled" /> Track CPU objects and estimate dwell time</label>
+              <label class="check-field"><input type="checkbox" id="cpu-line-crossing-alerts" /> Save line-crossing events</label>
+              <label class="check-field"><input type="checkbox" id="cpu-dwell-alerts" /> Save an event when an object stays past the dwell threshold</label>
+              <label class="field"><span>Dwell threshold (seconds)</span><input type="number" id="cpu-dwell-seconds" min="10" max="86400" value="600" required /></label>
               <label class="field"><span>Motion trigger (% of watch area)</span><input type="number" id="cpu-threshold" min="0.1" max="80" step="0.1" value="2" required /></label>
               <label class="field"><span>Minimum seconds between events of the same type</span><input type="number" id="cpu-cooldown" min="5" max="3600" value="30" required /></label>
               <div class="area-fields"><label class="field"><span>Left %</span><input type="number" id="cpu-x" min="0" max="95" value="0" step="1" required /></label><label class="field"><span>Top %</span><input type="number" id="cpu-y" min="0" max="95" value="0" step="1" required /></label><label class="field"><span>Width %</span><input type="number" id="cpu-width" min="5" max="100" value="100" step="1" required /></label><label class="field"><span>Height %</span><input type="number" id="cpu-height" min="5" max="100" value="100" step="1" required /></label></div>
               <button type="button" id="cpu-reset-area" class="text-button">Reset to full frame</button>
-              <details class="cpu-advanced"><summary>Image-quality thresholds</summary><label class="field"><span>Low light below brightness (0–255)</span><input id="cpu-dark" type="number" min="1" max="150" value="25" /></label><label class="field"><span>Low detail below edge score</span><input id="cpu-blur" type="number" min="1" max="1000" value="30" /></label></details>
-              <p>Motion is pixel change, not a person count. Lighting changes can trigger it. Low-detail warnings can also indicate a naturally plain scene. Face/people detection run every few seconds (heavier than motion) and can miss partial or side-on views.</p>
+              <details class="cpu-advanced"><summary>Image-quality thresholds and tripwire</summary><label class="field"><span>Low light below brightness (0–255)</span><input id="cpu-dark" type="number" min="1" max="150" value="25" /></label><label class="field"><span>Low detail below edge score</span><input id="cpu-blur" type="number" min="1" max="1000" value="30" /></label><div class="area-fields line-fields"><label class="field"><span>Line A left %</span><input id="cpu-line-x1" type="number" min="0" max="100" value="50" step="1" required /></label><label class="field"><span>Line A top %</span><input id="cpu-line-y1" type="number" min="0" max="100" value="10" step="1" required /></label><label class="field"><span>Line B left %</span><input id="cpu-line-x2" type="number" min="0" max="100" value="50" step="1" required /></label><label class="field"><span>Line B top %</span><input id="cpu-line-y2" type="number" min="0" max="100" value="90" step="1" required /></label></div></details>
+              <p>Motion is pixel change, not a person count. Tracking uses short-lived IDs from CPU object detections; it does not recognize identity. Line direction is reported as A→B or B→A. Dwell time resets when an object disappears for several samples.</p>
               <button class="btn-primary" type="submit" id="cpu-save">Save watch settings</button><div id="cpu-save-message" class="runtime-message" role="status"></div>
             </form>
           </div>

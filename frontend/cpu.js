@@ -3,6 +3,26 @@ let cpuRows = [], cpuId = null, cpuPollBusy = false, cpuSamples = [], cpuLastSam
 let detectionLogLastId = null, detectionLogPollBusy = false;
 const cpuEl = id => document.getElementById(`cpu-${id}`);
 
+function renderCpuHealth(data) {
+  const health = cpuEl('health');
+  const checks = [
+    ['OpenCV', data.opencv?.available, data.opencv?.version || 'unavailable'],
+    ['ONNX Runtime', data.onnxruntime?.runtime_version, data.onnxruntime?.runtime_version || 'unavailable'],
+    ['YOLO model', data.onnxruntime?.available && data.onnxruntime?.model_present, data.onnxruntime?.available ? `${data.onnxruntime.model_size_mb} MB · CPU` : 'unavailable'],
+  ];
+  health.innerHTML = `<span class="cpu-health-title">CPU stack</span>${checks.map(([label, ok, detail]) => `<span class="cpu-health-item ${ok ? 'ok' : 'bad'}"><span class="cpu-health-dot"></span>${escapeHtml(label)} <small>${escapeHtml(String(detail))}</small></span>`).join('')}`;
+}
+
+async function loadCpuHealth() {
+  try {
+    const res = await fetch(`${API}/api/cpu/health`);
+    if (!res.ok) throw new Error('health request failed');
+    renderCpuHealth(await res.json());
+  } catch (e) {
+    cpuEl('health').innerHTML = '<span class="cpu-health-title">CPU stack</span><span class="cpu-health-item bad"><span class="cpu-health-dot"></span>Health unavailable</span>';
+  }
+}
+
 async function loadCpu(reset = false) {
   if (cpuPollBusy) return;
   cpuPollBusy = true;
@@ -36,12 +56,14 @@ async function loadCpu(reset = false) {
 }
 
 function populateCpuForm(s) {
-  for (const [id, key] of [['enabled','enabled'],['motion-alerts','motion_alerts'],['quality-alerts','quality_alerts'],['face-alerts','face_alerts'],['people-alerts','people_alerts'],['object-alerts','object_alerts']]) cpuEl(id).checked = s[key];
+  for (const [id, key] of [['enabled','enabled'],['motion-alerts','motion_alerts'],['quality-alerts','quality_alerts'],['face-alerts','face_alerts'],['people-alerts','people_alerts'],['object-alerts','object_alerts'],['tracking-enabled','tracking_enabled'],['line-crossing-alerts','line_crossing_alerts'],['dwell-alerts','dwell_alerts']]) cpuEl(id).checked = s[key];
   cpuEl('threshold').value = +(s.motion_threshold * 100).toFixed(2);
   cpuEl('cooldown').value = s.cooldown_seconds;
   cpuEl('dark').value = s.dark_threshold;
   cpuEl('blur').value = s.blur_threshold;
+  cpuEl('dwell-seconds').value = s.dwell_seconds;
   for (const key of ['x','y','width','height']) cpuEl(key).value = Math.round(s.area[key] * 100);
+  for (const key of ['x1','y1','x2','y2']) cpuEl(`line-${key}`).value = Math.round(s.line[key] * 100);
   drawCpuArea();
 }
 
@@ -57,6 +79,8 @@ function renderCpu(row) {
     ['Faces detected', valid && s.face_count !== undefined ? String(s.face_count) : '—', 'Haar cascade, sampled every few seconds'],
     ['People detected', valid && s.people_count !== undefined ? String(s.people_count) : '—', 'HOG pedestrian detector, sampled every few seconds'],
     ['Objects detected', valid && s.objects !== undefined ? String(s.objects.length) : '—', valid && s.objects && s.objects.length ? [...new Set(s.objects.map(o => o.class))].join(', ') : 'Sampled every few seconds'],
+    ['Tracked now', valid && s.tracked_objects !== undefined ? String(s.tracked_objects.length) : '—', valid && s.tracked_counts && Object.keys(s.tracked_counts).length ? Object.entries(s.tracked_counts).map(([name,count]) => `${count} ${name}`).join(', ') : 'Enable tracking + objects'],
+    ['Line crossings', valid && s.line_crossings_total !== undefined ? String(s.line_crossings_total) : '—', 'Since tracking started'],
   ];
   cpuEl('metrics').innerHTML = metrics.map(([label,value,note]) => `<div class="stat"><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${escapeHtml(value)}</div><div class="stat-sub">${escapeHtml(note)}</div></div>`).join('');
   cpuEl('download').disabled = !valid;
@@ -102,8 +126,11 @@ cpuEl('camera').onchange = () => { cpuId = cpuEl('camera').value; cpuSamples = [
 function drawCpuArea() {
   const rect = document.getElementById('cpu-zone-rect');
   for (const key of ['x','y','width','height']) rect.setAttribute(key, cpuEl(key).value);
+  const line = document.getElementById('cpu-line');
+  for (const key of ['x1','y1','x2','y2']) line.setAttribute(key, cpuEl(`line-${key}`).value);
 }
 for (const key of ['x','y','width','height']) cpuEl(key).oninput = drawCpuArea;
+for (const key of ['x1','y1','x2','y2']) cpuEl(`line-${key}`).oninput = drawCpuArea;
 cpuEl('reset-area').onclick = () => { cpuEl('x').value = cpuEl('y').value = 0; cpuEl('width').value = cpuEl('height').value = 100; drawCpuArea(); };
 const editor = document.getElementById('cpu-zone-editor');
 let dragStart = null;
@@ -126,7 +153,7 @@ cpuEl('form').onsubmit = async e => {
   const target = cpuId;
   cpuEl('save').disabled = true;
   cpuEl('save-message').textContent = 'Saving…';
-  const body = {enabled: cpuEl('enabled').checked, motion_alerts: cpuEl('motion-alerts').checked, quality_alerts: cpuEl('quality-alerts').checked, face_alerts: cpuEl('face-alerts').checked, people_alerts: cpuEl('people-alerts').checked, object_alerts: cpuEl('object-alerts').checked, motion_threshold: Number(cpuEl('threshold').value)/100, cooldown_seconds: Number(cpuEl('cooldown').value), dark_threshold: Number(cpuEl('dark').value), blur_threshold: Number(cpuEl('blur').value), area: Object.fromEntries(['x','y','width','height'].map(k => [k, Number(cpuEl(k).value)/100]))};
+  const body = {enabled: cpuEl('enabled').checked, motion_alerts: cpuEl('motion-alerts').checked, quality_alerts: cpuEl('quality-alerts').checked, face_alerts: cpuEl('face-alerts').checked, people_alerts: cpuEl('people-alerts').checked, object_alerts: cpuEl('object-alerts').checked, tracking_enabled: cpuEl('tracking-enabled').checked, line_crossing_alerts: cpuEl('line-crossing-alerts').checked, dwell_alerts: cpuEl('dwell-alerts').checked, dwell_seconds: Number(cpuEl('dwell-seconds').value), motion_threshold: Number(cpuEl('threshold').value)/100, cooldown_seconds: Number(cpuEl('cooldown').value), dark_threshold: Number(cpuEl('dark').value), blur_threshold: Number(cpuEl('blur').value), area: Object.fromEntries(['x','y','width','height'].map(k => [k, Number(cpuEl(k).value)/100])), line: Object.fromEntries(['x1','y1','x2','y2'].map(k => [k, Number(cpuEl(`line-${k}`).value)/100]))};
   try {
     const res = await fetch(`${API}/api/cpu/${target}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     const data = await res.json();
@@ -149,6 +176,7 @@ cpuEl('download').onclick = async () => { try { await downloadFile(`${API}/api/c
 document.getElementById('export-events').onclick = async () => { try { await downloadFile(`${API}/api/events/export?${buildEventsQuery()}`, 'argus-events.csv'); } catch (err) { el.eventsList.innerHTML = `<div class="empty-state">${escapeHtml(err.message)}</div>`; } };
 setInterval(() => { if (currentView === 'cpu') loadCpu(); }, 1000);
 setInterval(() => { if (currentView === 'cpu') loadDetectionLog(); }, 3000);
+loadCpuHealth();
 
 document.getElementById('preset-ollama').onclick = () => {
   document.getElementById('runtime-provider').value = 'compatible';

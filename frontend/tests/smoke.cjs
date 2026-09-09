@@ -41,7 +41,16 @@ const assert = require('node:assert/strict');
     await page.locator('#chat-send').click();
     await page.getByText('Answer unavailable. Your question is ready to retry.').waitFor();
     assert.equal(await page.locator('#chat-input').inputValue(), 'Retry this question');
-    for (const view of ['alerts', 'rules', 'directory', 'health', 'runtime']) {
+    await page.locator('.rail-btn[data-view="alerts"]').click();
+    await page.locator('#events-live-state').waitFor();
+    await page.locator('#events-live-toggle').click();
+    assert.match(await page.locator('#events-live-state').innerText(), /PAUSED/);
+    await page.locator('#events-live-toggle').click();
+    assert.match(await page.locator('#events-live-state').innerText(), /LIVE/);
+    await page.locator('.rail-btn[data-view="cpu"]').click();
+    await page.locator('#cpu-health').waitFor();
+    assert.match(await page.locator('#cpu-health').innerText(), /OpenCV|Health unavailable/);
+    for (const view of ['rules', 'directory', 'health', 'runtime']) {
       await page.locator(`.rail-btn[data-view="${view}"]`).click();
       assert(await page.locator(`#view-${view}`).isVisible());
     }

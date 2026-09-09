@@ -87,10 +87,10 @@
       <section id="overview">
         <h2>Overview</h2>
         <p>There are four ways to connect an analyst. None are required to view cameras, manage sources, or use
-        CPU-based motion/face/people detection — those work with no model at all.</p>
+        CPU-based motion, face, people, and object detection — those run locally without a GPU or external AI service.</p>
         <div class="cards">
           <div class="card"><span class="badge">No GPU needed</span><h4>Camera viewing only</h4><p>Sources, uploads, rules, activity feed. No model calls of any kind.</p></div>
-          <div class="card"><span class="badge">No GPU needed</span><h4>CPU tools (OpenCV)</h4><p>Motion, brightness/blur, face and people detection running directly on the Argus host.</p></div>
+          <div class="card"><span class="badge">No GPU needed</span><h4>CPU tools</h4><p>OpenCV plus a bundled ONNX object model for motion, quality, tracking, line crossing, face, people, and object detection.</p></div>
           <div class="card"><span class="badge">CPU-friendly</span><h4>Local or hosted vision API</h4><p>Point Argus at any OpenAI-compatible <code>/v1/chat/completions</code> endpoint that accepts images — Ollama, llama.cpp, or a hosted provider.</p></div>
           <div class="card"><span class="badge">Requires NVIDIA GPU</span><h4>Embedded Qwen2.5-VL</h4><p>Runs the vision-language model in-process on the Argus host. Needs CUDA and ~20GB VRAM.</p></div>
         </div>
@@ -98,10 +98,10 @@
       </section>
 
       <section id="cpu">
-        <h2>CPU tools (OpenCV) <span class="tag">NO MODEL REQUIRED</span></h2>
+        <h2>CPU tools <span class="tag">NO GPU OR EXTERNAL SERVICE</span></h2>
         <p>Every Argus install — with or without a GPU — runs a set of classical computer-vision measurements per
-        camera in the background. These are not AI in the model-inference sense: no weights are downloaded and
-        nothing is inferred about identity or intent.</p>
+        camera in the background. OpenCV handles the lightweight measurements; the optional object detector uses
+        a bundled YOLOv8n ONNX model. Nothing is sent to a remote service, and nothing is inferred about identity or intent.</p>
         <h3>What it measures</h3>
         <table>
           <tr><th>Feature</th><th>How</th><th>Output</th></tr>
@@ -119,6 +119,13 @@
         A moving shadow can register as motion; a poster of a face can register as a face; object detection can miss
         unusual angles or lighting. Treat results as a fast, free first signal — pair with a vision model (below)
         when you need identity, context, or natural-language answers.</p>
+        <h3>Tracking and line crossing</h3>
+        <p>Enable <strong>Track CPU objects</strong> to give nearby detections a short-lived in-memory track ID. Argus
+        uses those IDs to estimate how many objects are currently present and how long each has remained visible.
+        Enable line-crossing events and place the A/B line over a doorway or lane; a crossing is logged once when a
+        tracked object moves from side A to side B or back. This is short-term motion tracking, not identity recognition.</p>
+        <p class="note">Tracking is based on sampled detections and can lose an ID when objects overlap, disappear, or
+        move a large distance between samples. Use a longer dwell threshold for vehicles or stationary objects.</p>
         <h3>Alert rules without a vision model</h3>
         <p>On the <strong>Rules</strong> page, choose <em>CPU object detection</em> as the rule source and pick a
         class from the list (person, car, backpack, etc.) — the rule fires whenever object detection is enabled on

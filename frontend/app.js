@@ -45,6 +45,15 @@ const el = {
 
   eventsList: document.getElementById("events-list"),
   eventsCharts: document.getElementById("events-charts"),
+  eventsKpis: document.getElementById("events-kpis"),
+  eventsLiveState: document.getElementById("events-live-state"),
+  eventsLiveToggle: document.getElementById("events-live-toggle"),
+  eventsLastUpdated: document.getElementById("events-last-updated"),
+  eventsStreamCount: document.getElementById("events-stream-count"),
+  eventsMarkSeen: document.getElementById("events-mark-seen"),
+  eventsClearFilters: document.getElementById("events-clear-filters"),
+  eventsFocusCritical: document.getElementById("events-focus-critical"),
+  eventsFocusRecent: document.getElementById("events-focus-recent"),
   eventsSearch: document.getElementById("events-search"),
   eventsCameraFilter: document.getElementById("events-camera-filter"),
   eventsSeverityFilter: document.getElementById("events-severity-filter"),
@@ -900,6 +909,8 @@ let latestEvents = [];
 let recentUnfiltered = [];
 let alertRules = [];
 const eventFilters = { q: "", camera_id: "", severity: "" };
+let eventLimit = 300;
+let eventsLivePaused = false;
 
 function getLastSeenEventId() {
   try {
@@ -920,6 +931,25 @@ function markEventsSeen() {
   renderAlertsBadge();
 }
 
+function renderEventKpis() {
+  const critical = recentUnfiltered.filter((event) => event.severity === "critical").length;
+  const warning = recentUnfiltered.filter((event) => event.severity === "warning").length;
+  const sources = new Set(recentUnfiltered.map((event) => event.camera_id)).size;
+  const latest = recentUnfiltered[0]?.created_at;
+  el.eventsKpis.innerHTML = [
+    ["Visible events", latestEvents.length, "Current stream filter"],
+    ["Critical", critical, "Recent unfiltered events"],
+    ["Warnings", warning, "Recent unfiltered events"],
+    ["Reporting sources", sources, latest ? `Latest ${new Date(latest).toLocaleTimeString()}` : "No events yet"],
+  ].map(([label, value, note]) => `<div class="activity-kpi"><span class="stat-label">${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong><small>${escapeHtml(note)}</small></div>`).join("");
+}
+
+function updateEventsLiveState() {
+  el.eventsLiveState.classList.toggle("paused", eventsLivePaused);
+  el.eventsLiveState.innerHTML = `<span class="live-dot"></span> ${eventsLivePaused ? "PAUSED" : "LIVE"}`;
+  el.eventsLiveToggle.textContent = eventsLivePaused ? "Resume stream" : "Pause stream";
+}
+
 async function pollRecentEvents() {
   try {
     const res = await fetch(`${API}/api/events?limit=30`);
@@ -929,8 +959,9 @@ async function pollRecentEvents() {
     const newCritical = rows.find((e) => e.severity === "critical" && !seenIds.has(e.id));
     recentUnfiltered = rows;
     renderOverviewActivity();
-    if (currentView === "alerts") loadEvents();
+    if (currentView === "alerts" && !eventsLivePaused) loadEvents();
     renderAlertsBadge();
+    renderEventKpis();
 
     const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
     recentEventCount24h = rows.filter((e) => e.created_at && new Date(e.created_at).getTime() >= dayAgo).length;
@@ -941,10 +972,10 @@ async function pollRecentEvents() {
     // Transient errors shouldn't break other views.
   }
 }
-setInterval(pollRecentEvents, 10000);
+setInterval(pollRecentEvents, 3000);
 
 function buildEventsQuery() {
-  const params = new URLSearchParams({ limit: "300" });
+  const params = new URLSearchParams({ limit: String(eventLimit) });
   if (eventFilters.q) params.set("q", eventFilters.q);
   if (eventFilters.camera_id) params.set("camera_id", eventFilters.camera_id);
   if (eventFilters.severity) params.set("severity", eventFilters.severity);
@@ -958,6 +989,8 @@ async function loadEvents() {
     latestEvents = await res.json();
     renderEvents();
     renderEventCharts();
+    renderEventKpis();
+    el.eventsLastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     // Transient errors shouldn't break other views.
   }
@@ -979,6 +1012,31 @@ el.eventsSeverityFilter.addEventListener("change", () => {
   eventFilters.severity = el.eventsSeverityFilter.value;
   loadEvents();
 });
+
+el.eventsLiveToggle.addEventListener("click", () => {
+  eventsLivePaused = !eventsLivePaused;
+  updateEventsLiveState();
+  if (!eventsLivePaused && currentView === "alerts") loadEvents();
+});
+el.eventsMarkSeen.addEventListener("click", markEventsSeen);
+el.eventsFocusCritical.addEventListener("click", () => {
+  eventFilters.severity = "critical";
+  el.eventsSeverityFilter.value = "critical";
+  loadEvents();
+});
+el.eventsFocusRecent.addEventListener("click", () => {
+  eventLimit = 30;
+  loadEvents();
+});
+el.eventsClearFilters.addEventListener("click", () => {
+  eventLimit = 300;
+  eventFilters.q = eventFilters.camera_id = eventFilters.severity = "";
+  el.eventsSearch.value = "";
+  el.eventsCameraFilter.value = "";
+  el.eventsSeverityFilter.value = "";
+  loadEvents();
+});
+updateEventsLiveState();
 
 el.historyAskForm.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1012,6 +1070,7 @@ function eventCameraLabel(camId) {
 
 function renderEvents() {
   el.eventsList.innerHTML = "";
+  el.eventsStreamCount.textContent = `${latestEvents.length} event${latestEvents.length === 1 ? "" : "s"}`;
   if (latestEvents.length === 0) {
     el.eventsList.innerHTML = `<div class="empty-state">No events match the current filters.</div>`;
     return;
