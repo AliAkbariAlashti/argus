@@ -9,7 +9,7 @@ qwen-vl-utils==0.0.14
 decord==0.6.0
 av==18.1.0
 pillow==12.2.0
-opencv-python-headless==5.0.0.93
+opencv-python-headless==5.0.0.93  # matches the VM; note this build has no objdetect (CPU face/people detection auto-disables, see app/cpu.py)
 fastapi==0.141.1
 uvicorn==0.52.0
 pydantic==2.13.4
@@ -17,3 +17,5 @@ numpy==2.5.1
 python-multipart==0.0.20
 sqlalchemy==2.0.51
 psycopg[binary]==3.2.3
+
+httpx>=0.27,<1

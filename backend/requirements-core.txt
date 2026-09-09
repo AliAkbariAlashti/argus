@@ -1,0 +1,11 @@
+# Camera UI + local/hosted vision API. No torch, CUDA or model download.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+pydantic>=2.9,<3
+httpx>=0.27,<1
+pillow>=10.4,<13
+opencv-python-headless>=4.10,<5  # 5.x wheels ship without objdetect (no CascadeClassifier/HOGDescriptor)
+numpy>=1.26,<3
+python-multipart>=0.0.20,<1
+sqlalchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
