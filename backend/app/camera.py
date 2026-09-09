@@ -55,11 +55,19 @@ class CameraFeed:
         fps = fps if fps > 1 else 25.0
         delay = 1.0 / fps
 
+        failures = 0
         while self._running:
             ok, frame = cap.read()
             if not ok:
+                failures += 1
+                if failures >= 5:
+                    log.error("Camera %s: source stopped yielding frames", self.id)
+                    self._running = False
+                    break
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                time.sleep(0.1)
                 continue
+            failures = 0
 
             ok, buf = cv2.imencode(
                 ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
@@ -78,12 +86,24 @@ class CameraFeed:
 
         cap.release()
 
+    @property
+    def running(self):
+        return self._running
+
+    def is_online(self):
+        with self._lock:
+            return bool(self._running and self._frame_times and time.monotonic() - self._frame_times[-1] < 5)
+
     def get_jpeg(self):
+        if not self.is_online():
+            return None
         with self._lock:
             return self._jpeg
 
     def get_frame(self):
         """Returns the latest frame as a BGR numpy array, or None."""
+        if not self.is_online():
+            return None
         with self._lock:
             return None if self._frame is None else self._frame.copy()
 
@@ -101,6 +121,8 @@ class CameraFeed:
         current one) so the model can reason about movement rather than a
         single instant. Falls back to just the latest frame early on, before
         the history buffer has filled."""
+        if not self.is_online():
+            return []
         with self._lock:
             frames = [f.copy() for f in self._history][-count:]
             latest = None if self._frame is None else self._frame.copy()
@@ -142,7 +164,7 @@ class CameraRegistry:
 
     def is_online(self, cam_id: str) -> bool:
         feed = self._feeds.get(cam_id)
-        return feed is not None and feed.get_jpeg() is not None
+        return feed is not None and feed.is_online()
 
     def stop_all(self):
         with self._lock:

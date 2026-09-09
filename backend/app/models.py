@@ -1,9 +1,17 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Text, DateTime, ARRAY, Integer, Boolean
+from sqlalchemy import Column, String, Text, DateTime, ARRAY, Integer, Boolean, JSON
 
 from .db import Base
+
+
+def _utc_iso(value):
+    if value is None:
+        return None
+    # Existing timestamp columns store UTC without a timezone. Include the
+    # offset in the API so browsers do not interpret them as local time.
+    return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).isoformat()
 
 
 def _new_id() -> str:
@@ -34,7 +42,7 @@ class Camera(Base):
             "description": self.description,
             "source_type": self.source_type,
             "source_path": self.source_path,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": _utc_iso(self.created_at),
         }
 
 
@@ -62,7 +70,7 @@ class ChatMessage(Base):
             "text": self.text,
             "cameras_used": self.cameras_used or [],
             "snapshot": self.snapshot,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": _utc_iso(self.created_at),
         }
 
 
@@ -91,7 +99,7 @@ class Event(Base):
             "category": self.category,
             "summary": self.summary,
             "snapshot": self.snapshot,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": _utc_iso(self.created_at),
         }
 
 
@@ -116,5 +124,11 @@ class AlertRule(Base):
             "camera_id": self.camera_id,
             "target": self.target,
             "enabled": self.enabled,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": _utc_iso(self.created_at),
         }
+
+
+class CpuConfig(Base):
+    __tablename__ = "cpu_configs"
+    camera_id = Column(String, primary_key=True)
+    settings = Column(JSON, nullable=False, default=dict)
