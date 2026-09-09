@@ -1,5 +1,6 @@
 /* CPU tools run on every supported server without a vision model. */
 let cpuRows = [], cpuId = null, cpuPollBusy = false, cpuSamples = [], cpuLastSample = null;
+let detectionLogLastId = null, detectionLogPollBusy = false;
 const cpuEl = id => document.getElementById(`cpu-${id}`);
 
 async function loadCpu(reset = false) {
@@ -72,9 +73,38 @@ function renderCpu(row) {
   }
 }
 
+async function loadDetectionLog() {
+  const logEl = document.getElementById('detection-log');
+  if (!cpuId) { logEl.innerHTML = ''; return; }
+  if (detectionLogPollBusy) return;
+  detectionLogPollBusy = true;
+  try {
+    const res = await fetch(`${API}/api/detections?camera_id=${cpuId}&limit=100`);
+    if (!res.ok) return;
+    const rows = await res.json();
+    detectionLogLastId = rows[0]?.id ?? detectionLogLastId;
+    if (rows.length === 0) {
+      logEl.innerHTML = '<div class="empty-state-inline">No detections logged yet. Enable face, people, or object detection above to start collecting samples.</div>';
+      return;
+    }
+    logEl.innerHTML = rows.map(r => {
+      const counts = [];
+      if (r.face_count) counts.push(`${r.face_count} face${r.face_count === 1 ? '' : 's'}`);
+      if (r.people_count) counts.push(`${r.people_count} ${r.people_count === 1 ? 'person' : 'people'} (HOG)`);
+      const objectSummary = r.objects.length
+        ? r.objects.map(o => `${escapeHtml(o.class)} ${(o.confidence * 100).toFixed(0)}%`).join(', ')
+        : '';
+      const summary = [...counts, objectSummary].filter(Boolean).join(' · ') || 'No detections this sample';
+      return `<div class="detection-log-row"><span class="detection-log-time">${new Date(r.created_at).toLocaleTimeString()}</span><span class="detection-log-summary">${summary}</span></div>`;
+    }).join('');
+  } catch (e) {
+    // Transient errors shouldn't break the rest of the page.
+  } finally { detectionLogPollBusy = false; }
+}
+
 cpuEl('preview').onload = () => { cpuEl('preview-message').hidden = true; };
 cpuEl('preview').onerror = () => { cpuEl('preview-message').hidden = false; cpuEl('preview-message').textContent = 'No current analysis frame. Retrying…'; };
-cpuEl('camera').onchange = () => { cpuId = cpuEl('camera').value; cpuSamples = []; cpuLastSample = null; cpuEl('spark').replaceChildren(); cpuEl('save-message').textContent = ''; const row = cpuRows.find(r => r.camera_id === cpuId); if (row) { populateCpuForm(row.settings); renderCpu(row); } };
+cpuEl('camera').onchange = () => { cpuId = cpuEl('camera').value; cpuSamples = []; cpuLastSample = null; detectionLogLastId = null; cpuEl('spark').replaceChildren(); cpuEl('save-message').textContent = ''; const row = cpuRows.find(r => r.camera_id === cpuId); if (row) { populateCpuForm(row.settings); renderCpu(row); } loadDetectionLog(); };
 function drawCpuArea() {
   const rect = document.getElementById('cpu-zone-rect');
   for (const key of ['x','y','width','height']) rect.setAttribute(key, cpuEl(key).value);
@@ -124,6 +154,7 @@ async function downloadFile(url, filename) {
 cpuEl('download').onclick = async () => { try { await downloadFile(`${API}/api/cpu/${cpuId}/snapshot`, `argus-${cpuId}-analysis.jpg`); } catch (err) { cpuEl('save-message').textContent = err.message; } };
 document.getElementById('export-events').onclick = async () => { try { await downloadFile(`${API}/api/events/export?${buildEventsQuery()}`, 'argus-events.csv'); } catch (err) { el.eventsList.innerHTML = `<div class="empty-state">${escapeHtml(err.message)}</div>`; } };
 setInterval(() => { if (currentView === 'cpu') loadCpu(); }, 1000);
+setInterval(() => { if (currentView === 'cpu') loadDetectionLog(); }, 3000);
 
 document.getElementById('preset-ollama').onclick = () => {
   document.getElementById('runtime-provider').value = 'compatible';
@@ -144,4 +175,4 @@ document.getElementById('preset-llama').onclick = () => {
   document.getElementById('runtime-message').textContent = 'Preset filled, not saved. Start llama-server with the argus-vision alias from the documentation.';
 };
 // app.js initializes deep links before this file runs. Resume a CPU deep link now.
-if (currentView === 'cpu') loadCpu(true);
+if (currentView === 'cpu') { loadCpu(true); loadDetectionLog(); }
