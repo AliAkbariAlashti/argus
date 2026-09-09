@@ -73,13 +73,15 @@ const el = {
 };
 
 const VIEW_TITLES = {
-  dashboard: "Search",
-  chat: "Chat",
-  alerts: "Alerts",
+  dashboard: "Overview",
+  chat: "Live analyst",
+  alerts: "Activity",
   rules: "Alert Rules",
   archive: "Archive",
-  directory: "Directory",
+  directory: "Cameras",
   health: "System Health",
+  runtime: "AI setup",
+  cpu: "CPU tools",
 };
 
 /* ---------- clock + model status ---------- */
@@ -101,19 +103,24 @@ async function pollStatus() {
     const data = await res.json();
     if (data.model_ready) {
       el.modelStatus.className = "pill pill-ready";
-      el.modelStatus.innerHTML = `<span class="dot"></span> Model ready`;
+      el.modelStatus.innerHTML = `<span class="dot"></span> Analyst ready`;
       el.railStatus.className = "rail-status ready";
+    } else if (data.configured === false) {
+      el.modelStatus.className = "pill pill-loading";
+      el.modelStatus.innerHTML = `<span class="dot"></span> AI not connected`;
+      el.railStatus.className = "rail-status";
     } else if (data.model_error) {
       el.modelStatus.className = "pill pill-error";
       el.modelStatus.innerHTML = `<span class="dot"></span> Model error`;
       el.railStatus.className = "rail-status error";
     } else {
       el.modelStatus.className = "pill pill-loading";
-      el.modelStatus.innerHTML = `<span class="dot"></span> Loading model…`;
+      el.modelStatus.innerHTML = `<span class="dot"></span> Test AI connection`;
       el.railStatus.className = "rail-status";
     }
   } catch (e) {
-    // ignore transient errors
+    el.modelStatus.className = "pill pill-error";
+    el.modelStatus.innerHTML = `<span class="dot"></span> Server unavailable`;
   }
 }
 setInterval(pollStatus, 3000);
@@ -122,13 +129,13 @@ pollStatus();
 /* ---------- view routing ---------- */
 
 document.querySelectorAll(".rail-btn").forEach((btn) => {
-  if (btn.classList.contains("disabled")) return;
+  if (btn.classList.contains("disabled") || !btn.dataset.view) return;
   btn.addEventListener("click", () => switchView(btn.dataset.view));
 });
 
 function switchView(view) {
   currentView = view;
-  document.querySelectorAll(".rail-btn").forEach((b) => {
+  document.querySelectorAll(".rail-btn[data-view]").forEach((b) => {
     b.classList.toggle("active", b.dataset.view === view);
   });
   document.querySelectorAll(".view").forEach((v) => {
@@ -138,6 +145,8 @@ function switchView(view) {
 
   if (view === "directory") renderCamerasTable();
   if (view === "health") loadHealth();
+  if (view === "runtime") loadRuntime();
+  if (view === "cpu" && typeof loadCpu === "function") loadCpu(true);
   if (view === "dashboard") renderFleetStrip();
   if (view === "alerts") {
     loadEvents();
@@ -152,7 +161,7 @@ function switchView(view) {
   // resume it when coming back to Chat with a camera already selected.
   if (view === "chat" && activeCameraId) {
     if (!el.viewerStream.src) {
-      el.viewerStream.src = `${API}/api/cameras/${activeCameraId}/stream`;
+      selectCamera(activeCameraId);
     }
   } else {
     el.viewerStream.removeAttribute("src");
@@ -163,8 +172,15 @@ function switchView(view) {
 /* ---------- data loading ---------- */
 
 async function loadCameras() {
-  const res = await fetch(`${API}/api/cameras`);
-  cameras = await res.json();
+  let res;
+  try {
+    res = await fetch(`${API}/api/cameras`);
+    if (!res.ok) throw new Error("Sources unavailable");
+    cameras = await res.json();
+  } catch (_) {
+    el.fleetStrip.innerHTML = '<div class="empty-state">Cannot connect to your cameras. Check system health; we will retry automatically.</div>';
+    return;
+  }
   renderFleetStrip();
   renderChatStrip();
   renderRailBadge();
@@ -172,8 +188,21 @@ async function loadCameras() {
   populateCameraSelects();
   if (currentView === "directory") renderCamerasTable();
 
+  if (!cameras.some(c => c.id === activeCameraId)) activeCameraId = null;
   if (!activeCameraId && cameras.length) {
     selectCamera(cameras[0].id);
+  } else if (activeCameraId) {
+    const active = cameras.find(c => c.id === activeCameraId);
+    document.getElementById("viewer-source-label").textContent = sourceLabel(active);
+    if (!active.online || (currentView === "chat" && !el.viewerStream.getAttribute("src"))) selectCamera(activeCameraId);
+  } else {
+    el.viewerStream.removeAttribute("src");
+    el.viewerStream.classList.remove("visible");
+    el.viewerTitle.textContent = "Add a source to begin";
+    el.viewerLocation.textContent = "";
+    el.viewerPlaceholder.style.display = "block";
+    el.viewerPlaceholder.textContent = "Upload a video in Cameras to start exploring.";
+    document.getElementById("viewer-source-label").textContent = "NO SOURCE";
   }
 }
 
@@ -215,9 +244,9 @@ function renderStatRow() {
   const online = cameras.filter((c) => c.online).length;
   el.statRow.innerHTML = `
     <div class="stat">
-      <div class="stat-label">${STAT_ICONS.events} Events</div>
+      <div class="stat-label">${STAT_ICONS.events} Recent events</div>
       <div class="stat-value">${recentEventCount24h}</div>
-      <div class="stat-sub">in the last 24 hours</div>
+      <div class="stat-sub">last 24h · latest 30 events</div>
     </div>
     <div class="stat">
       <div class="stat-label">${STAT_ICONS.sources} Sources</div>
@@ -225,9 +254,9 @@ function renderStatRow() {
       <div class="stat-sub">${online} online now</div>
     </div>
     <div class="stat">
-      <div class="stat-label">${STAT_ICONS.footage} Searchable footage</div>
-      <div class="stat-value">Live<span class="stat-unit">+ history</span></div>
-      <div class="stat-sub">every source, continuously</div>
+      <div class="stat-label">${STAT_ICONS.footage} Analysis mode</div>
+      <div class="stat-value">Visual<span class="stat-unit"> Q&A</span></div>
+      <div class="stat-sub">Answers with saved snapshots</div>
     </div>
   `;
 }
@@ -239,8 +268,9 @@ function renderFleetStrip() {
     return;
   }
   for (const cam of cameras) {
-    const tile = document.createElement("div");
+    const tile = document.createElement("button");
     tile.className = "fleet-tile";
+    tile.setAttribute("aria-label", `Open ${cam.name} in live analyst`);
     tile.onclick = () => {
       switchView("chat");
       selectCamera(cam.id);
@@ -252,9 +282,9 @@ function renderFleetStrip() {
             ? `<img data-thumb-for="${cam.id}" src="${API}/api/cameras/${cam.id}/snapshot" />`
             : `<div class="fleet-tile-offline">No signal</div>`
         }
-        <div class="fleet-tile-live"><span class="dot"></span>LIVE</div>
+        <div class="fleet-tile-live">${sourceLabel(cam)}</div>
       </div>
-      <div class="fleet-tile-name">${escapeHtml(cam.name)}</div>
+      <div class="fleet-tile-name"><span>${escapeHtml(cam.name)}</span><span class="tile-arrow">↗</span></div><div class="fleet-tile-location">${escapeHtml(cam.location || "No location set")}</div>
     `;
     el.fleetStrip.appendChild(tile);
   }
@@ -283,68 +313,20 @@ function renderRecentQueries() {
   }
 }
 
-el.searchForm.addEventListener("submit", async (e) => {
+el.searchForm.addEventListener("submit", (e) => {
   e.preventDefault();
   const question = el.searchInput.value.trim();
-  if (!question) return;
-
+  if (!question || chatBusy) return;
   recentQueries.unshift(question);
   renderRecentQueries();
-
-  el.searchSubmit.disabled = true;
-  el.searchResult.hidden = false;
-  el.searchResult.innerHTML = `
-    <div class="search-result-q">${escapeHtml(question)}</div>
-    <div class="search-result-answer thinking">Analyzing…</div>
-  `;
-
-  try {
-    const res = await fetch(`${API}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, focused_camera_id: activeCameraId }),
-    });
-    const data = await res.json();
-
-    if (!res.ok) {
-      el.searchResult.innerHTML = `
-        <div class="search-result-q">${escapeHtml(question)}</div>
-        <div class="search-result-answer">${escapeHtml(data.detail || "Something went wrong.")}</div>
-      `;
-    } else {
-      const label = camerasUsedLabel(data.cameras_used);
-      el.searchResult.innerHTML = `
-        <div class="search-result-q">${escapeHtml(question)}</div>
-        <div class="search-result-answer">${escapeHtml(data.answer)}</div>
-        <div class="search-result-meta">
-          ${label ? `<span class="search-result-cam">${escapeHtml(label)}</span>` : ""}
-        </div>
-      `;
-      if (data.snapshot) {
-        const img = document.createElement("img");
-        img.className = "search-result-snapshot";
-        img.src = data.snapshot;
-        img.alt = "Frame analyzed";
-        el.searchResult.appendChild(img);
-      }
-    }
-  } catch (err) {
-    el.searchResult.innerHTML = `
-      <div class="search-result-q">${escapeHtml(question)}</div>
-      <div class="search-result-answer">Could not reach the analysis server.</div>
-    `;
-  }
-
-  el.searchSubmit.disabled = false;
-
-  // Also feed this into the persistent Chat log, so a search asked from
-  // the Dashboard and a question asked from Chat are one conversation,
-  // not two separate silos.
-  await loadChatHistory();
+  document.getElementById("chat-scope").value = "fleet";
+  switchView("chat");
+  el.chatInput.value = question;
+  el.chatForm.requestSubmit();
 });
 
 el.qaAddFile.addEventListener("click", () => openCameraModal());
-el.qaAddCamera.addEventListener("click", () => openCameraModal());
+el.qaAddCamera.addEventListener("click", () => switchView("directory"));
 el.qaAddRule.addEventListener("click", () => switchView("rules"));
 
 /* ---------- chat view ---------- */
@@ -352,7 +334,7 @@ el.qaAddRule.addEventListener("click", () => switchView("rules"));
 function renderChatStrip() {
   el.chatStrip.innerHTML = "";
   for (const cam of cameras) {
-    const item = document.createElement("div");
+    const item = document.createElement("button");
     item.className = "strip-item" + (cam.id === activeCameraId ? " active" : "");
     item.onclick = () => selectCamera(cam.id);
     item.innerHTML = `
@@ -373,9 +355,18 @@ function selectCamera(camId) {
 
   el.viewerTitle.textContent = cam.name;
   el.viewerLocation.textContent = cam.location;
-  el.viewerStream.src = `${API}/api/cameras/${camId}/stream`;
-  el.viewerStream.classList.add("visible");
-  el.viewerPlaceholder.style.display = "none";
+  document.getElementById("viewer-source-label").textContent = sourceLabel(cam);
+  if (currentView === "chat" && cam.online) {
+    el.viewerPlaceholder.textContent = "Connecting to source…";
+    el.viewerPlaceholder.style.display = "block";
+    el.viewerStream.classList.remove("visible");
+    el.viewerStream.src = `${API}/api/cameras/${camId}/stream`;
+  } else {
+    el.viewerStream.removeAttribute("src");
+    el.viewerStream.classList.remove("visible");
+    el.viewerPlaceholder.style.display = "block";
+    el.viewerPlaceholder.textContent = "Source offline. Check its connection in Cameras.";
+  }
 
   renderChatStrip();
 }
@@ -386,7 +377,7 @@ async function loadPrompts() {
   el.promptChips.innerHTML = "";
   el.searchChips.innerHTML = "";
   for (const p of prompts) {
-    const chip = document.createElement("div");
+    const chip = document.createElement("button");
     chip.className = "chip";
     chip.textContent = p;
     chip.onclick = () => {
@@ -396,7 +387,7 @@ async function loadPrompts() {
     el.promptChips.appendChild(chip);
 
     if (el.searchChips.childElementCount < 4) {
-      const searchChip = document.createElement("div");
+      const searchChip = document.createElement("button");
       searchChip.className = "chip";
       searchChip.textContent = p;
       searchChip.onclick = () => {
@@ -410,9 +401,11 @@ async function loadPrompts() {
 
 async function loadChatHistory() {
   try {
+    if (chatBusy) return;
     const res = await fetch(`${API}/api/chat/history`);
     if (!res.ok) return;
     const rows = await res.json();
+    if (chatBusy) return;
     chatLog.length = 0;
     for (const row of rows) {
       chatLog.push({
@@ -431,7 +424,7 @@ async function loadChatHistory() {
 function renderChat() {
   el.chatLog.innerHTML = "";
   if (chatLog.length === 0) {
-    el.chatLog.innerHTML = `<div class="chat-empty">No conversation yet. Ask about a specific source, or something across all of them.</div>`;
+    el.chatLog.innerHTML = `<div class="chat-empty"><span class="empty-analyst">✳</span><strong>A second set of eyes.</strong><p>Ask what is happening, describe an object, or compare your cameras. Every visual answer includes the frame it used.</p></div>`;
     return;
   }
   for (const msg of chatLog) {
@@ -463,7 +456,11 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot) {
     const img = document.createElement("img");
     img.className = "msg-snapshot";
     img.src = snapshot;
-    img.alt = "Frame analyzed";
+    img.alt = "Open the frame used for this answer";
+    img.tabIndex = 0;
+    img.setAttribute("role", "button");
+    img.onclick = () => openEvidence(snapshot, camerasUsedLabel(camerasUsed) || "Analysis snapshot");
+    img.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); img.click(); } };
     bubble.appendChild(img);
   }
 
@@ -504,55 +501,140 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot) {
 }
 
 el.btnClearChat.addEventListener("click", async () => {
+  if (chatBusy) return;
   if (chatLog.length && !confirm("Clear the whole conversation?")) return;
   try {
-    await fetch(`${API}/api/chat/history`, { method: "DELETE" });
+    const res = await fetch(`${API}/api/chat/history`, { method: "DELETE" });
+    if (!res.ok) throw new Error("Could not clear conversation");
   } catch (e) {
-    // Clearing the view is still the right outcome if the call fails.
+    document.getElementById("chat-progress").hidden = false;
+    document.getElementById("chat-progress").textContent = "Could not clear the conversation. Please retry.";
+    return;
   }
   chatLog.length = 0;
   renderChat();
 });
 
+let chatBusy = false;
+
+async function readChatStream(question, onEvent) {
+  const res = await fetch(`${API}/api/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, focused_camera_id: activeCameraId,
+      scope: document.getElementById("chat-scope").value }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(typeof data.detail === "string" ? data.detail : "Please check your question and selected source.");
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "", answer = null;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary;
+      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const type = block.match(/^event: (.+)$/m)?.[1];
+        const raw = block.match(/^data: (.+)$/m)?.[1];
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        if (type === "error") throw new Error(data.detail);
+        if (type === "answer") answer = data;
+        onEvent(type, data);
+      }
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  if (!answer) throw new Error("The connection ended before the answer was saved. Please retry.");
+  return answer;
+}
+
 el.chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const question = el.chatInput.value.trim();
-  if (!question) return;
-
+  if (!question || chatBusy) return;
+  chatBusy = true;
   chatLog.push({ role: "user", text: question });
   renderChat();
   el.chatInput.value = "";
-  el.chatSend.disabled = true;
-
-  const thinkingBubble = appendMessageEl("ai", "Analyzing…", true);
-
+  el.chatSend.disabled = el.searchSubmit.disabled = el.btnClearChat.disabled = true;
+  const progress = document.getElementById("chat-progress");
+  progress.hidden = false;
+  const started = Date.now();
+  let status = "Reading recent frames", streamed = "";
+  const updateProgress = () => progress.textContent = `${status} · ${Math.floor((Date.now() - started) / 1000)}s`;
+  updateProgress();
+  const timer = setInterval(updateProgress, 1000);
+  const bubble = appendMessageEl("ai", "Looking at your cameras…", true);
   try {
-    const res = await fetch(`${API}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, focused_camera_id: activeCameraId }),
+    const data = await readChatStream(question, (type, data) => {
+      if (type === "status") status = data.text;
+      if (type === "token") {
+        status = "Writing answer";
+        streamed += data.text;
+        bubble.classList.remove("thinking");
+        bubble.firstChild.textContent = streamed;
+        el.chatLog.scrollTop = el.chatLog.scrollHeight;
+      }
     });
-    const data = await res.json();
-    thinkingBubble.remove();
-
-    if (!res.ok) {
-      chatLog.push({ role: "ai", text: data.detail || "Something went wrong." });
-    } else {
-      chatLog.push({
-        role: "ai",
-        text: data.answer,
-        camerasUsed: data.cameras_used,
-        snapshot: data.snapshot,
-      });
-    }
+    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot });
+    progress.textContent = `Answer complete · ${data.elapsed_seconds}s · ${data.snapshot ? "Evidence attached" : "Camera metadata"}`;
   } catch (err) {
-    thinkingBubble.remove();
-    chatLog.push({ role: "ai", text: "Could not reach the analysis server." });
+    chatLog.push({ role: "ai", text: err.message || "Could not reach the analysis server." });
+    el.chatInput.value = question;
+    progress.textContent = "Answer unavailable. Your question is ready to retry.";
+  } finally {
+    clearInterval(timer);
+    chatBusy = false;
+    el.chatSend.disabled = el.searchSubmit.disabled = el.btnClearChat.disabled = false;
+    renderChat();
+    el.chatInput.focus();
   }
-
-  renderChat();
-  el.chatSend.disabled = false;
 });
+
+function sourceLabel(cam) {
+  return !cam.online ? "OFFLINE" : cam.source_type === "file" ? "DEMO FOOTAGE" : "LIVE CAMERA";
+}
+
+function openEvidence(src, caption) {
+  document.getElementById("evidence-image").src = src;
+  document.getElementById("evidence-caption").textContent = caption + " · Saved analysis frame";
+  document.getElementById("evidence-dialog").showModal();
+}
+document.getElementById("evidence-close").onclick = () => document.getElementById("evidence-dialog").close();
+document.getElementById("evidence-dialog").onclick = e => { if (e.target === e.currentTarget) e.currentTarget.close(); };
+el.viewerStream.onload = () => { el.viewerStream.classList.add("visible"); el.viewerPlaceholder.style.display = "none"; };
+el.viewerStream.onerror = () => { el.viewerStream.classList.remove("visible"); el.viewerPlaceholder.style.display = "block"; el.viewerPlaceholder.textContent = "Source unavailable. Reopen the camera to reconnect."; };
+document.getElementById("open-analyst").onclick = () => switchView("chat");
+document.getElementById("view-all-events").onclick = () => switchView("alerts");
+document.getElementById("presentation-toggle").onclick = async () => {
+  try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); }
+  catch (_) { document.getElementById("presentation-toggle").textContent = "Use browser fullscreen"; }
+};
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { closeCameraModal(); closeEditModal(); }
+});
+
+function renderOverviewActivity() {
+  const container = document.getElementById("overview-activity");
+  container.innerHTML = "";
+  if (!recentUnfiltered.length) {
+    container.innerHTML = '<div class="activity-empty"><span>◎</span><strong>A quiet moment.</strong><p>Detections will appear here as Argus observes your cameras.</p></div>';
+    return;
+  }
+  for (const ev of recentUnfiltered.slice(0, 4)) {
+    const row = document.createElement("button");
+    row.className = "activity-item";
+    row.innerHTML = `<span class="activity-dot ${escapeHtml(ev.severity)}"></span><div><strong>${escapeHtml(ev.category)}</strong><p>${escapeHtml(eventCameraLabel(ev.camera_id))}</p><time>${escapeHtml(new Date(ev.created_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}))}</time></div><span>↗</span>`;
+    row.onclick = () => ev.snapshot ? openEvidence(ev.snapshot, `${eventCameraLabel(ev.camera_id)} · ${new Date(ev.created_at).toLocaleString()}`) : switchView("alerts");
+    container.appendChild(row);
+  }
+}
 
 /* ---------- directory (camera CRUD) ---------- */
 
@@ -842,6 +924,8 @@ async function pollRecentEvents() {
     const seenIds = new Set(recentUnfiltered.map((e) => e.id));
     const newCritical = rows.find((e) => e.severity === "critical" && !seenIds.has(e.id));
     recentUnfiltered = rows;
+    renderOverviewActivity();
+    if (currentView === "alerts") loadEvents();
     renderAlertsBadge();
 
     const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -930,6 +1014,14 @@ function renderEvents() {
         <div class="event-summary">${escapeHtml(ev.summary)}</div>
       </div>
     `;
+    const thumb = row.querySelector("img");
+    if (thumb) {
+      thumb.tabIndex = 0;
+      thumb.setAttribute("role", "button");
+      thumb.alt = "Open event evidence";
+      thumb.onclick = () => openEvidence(ev.snapshot, `${eventCameraLabel(ev.camera_id)} · ${time}`);
+      thumb.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); thumb.click(); } };
+    }
     el.eventsList.appendChild(row);
   }
 }
@@ -937,10 +1029,7 @@ function renderEvents() {
 /* ---------- events: charts ---------- */
 // Categorical hues validated (dataviz skill's validate_palette.js) against
 // this app's actual card surface (#12141d) in dark mode.
-const CAMERA_CHART_COLORS = [
-  "#3987e5", "#d95926", "#199e70", "#c98500",
-  "#d55181", "#008300", "#9085e9", "#e66767",
-];
+const CAMERA_CHART_COLORS = ["#eee", "#bbb", "#888", "#666", "#ddd", "#aaa", "#999", "#777"];
 
 function chartBarRow(label, count, max, color) {
   const pct = max > 0 ? (count / max) * 100 : 0;
@@ -1103,16 +1192,18 @@ function renderAlertRulesList() {
 }
 
 async function toggleAlertRule(ruleId, enabled) {
-  await fetch(`${API}/api/alert-rules/${ruleId}`, {
+  const res = await fetch(`${API}/api/alert-rules/${ruleId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
+  if (!res.ok) { alert("Could not update the rule. Please retry."); }
   await loadAlertRules();
 }
 
 async function deleteAlertRule(ruleId) {
-  await fetch(`${API}/api/alert-rules/${ruleId}`, { method: "DELETE" });
+  const res = await fetch(`${API}/api/alert-rules/${ruleId}`, { method: "DELETE" });
+  if (!res.ok) { alert("Could not delete the rule. Please retry."); }
   await loadAlertRules();
 }
 
@@ -1137,6 +1228,78 @@ function escapeHtml(str) {
   div.textContent = str ?? "";
   return div.innerHTML;
 }
+
+/* ---------- Hardware-independent AI setup ---------- */
+function runtimeFields() {
+  const provider = document.getElementById("runtime-provider").value;
+  document.getElementById("runtime-api-fields").hidden = provider !== "compatible";
+  document.getElementById("runtime-embedded-note").hidden = provider !== "embedded";
+  document.getElementById("runtime-test").disabled = provider === "none";
+}
+document.getElementById("runtime-provider").onchange = runtimeFields;
+document.getElementById("setup-shortcut").onclick = () => switchView("runtime");
+async function loadRuntime() {
+  try {
+    const res = await fetch(`${API}/api/runtime`);
+    if (!res.ok) throw new Error("Could not load AI settings.");
+    const {settings, hardware} = await res.json();
+    document.getElementById("runtime-provider").value = settings.provider;
+    document.getElementById("runtime-url").value = settings.base_url;
+    document.getElementById("runtime-model").value = settings.model;
+    document.getElementById("runtime-key").value = "";
+    document.getElementById("runtime-key").placeholder = settings.has_api_key ? "Key saved · leave blank to keep" : "Optional for a local server";
+    document.getElementById("runtime-remote").checked = settings.allow_remote;
+    document.getElementById("runtime-monitor").checked = settings.monitor_enabled;
+    document.getElementById("runtime-hardware").textContent = hardware.recommendation;
+    document.getElementById("runtime-capabilities").innerHTML = [
+      ["Camera viewing & uploads", "Available · CPU"],
+      ["Motion, watch areas & quality", "Available · OpenCV CPU"],
+      ["Measurement reports & CSV export", "Available · no model"],
+      ["Saved activity & snapshots", "Available · database"],
+      ["Visual chat", settings.ready ? "Connected" : "Needs tested vision connection"],
+      ["Vision-model detections", settings.ready && settings.monitor_enabled ? "Enabled" : "Not enabled"],
+      ["NVIDIA GPU", hardware.nvidia_gpu || "Not detected"],
+      ["Historical video search", "Not included in this MVP"],
+    ].map(([name, value]) => `<div class="capability"><span>${escapeHtml(name)}</span><span>${escapeHtml(value)}</span></div>`).join("");
+    runtimeFields();
+  } catch (err) { document.getElementById("runtime-message").textContent = err.message; }
+}
+async function saveRuntime() {
+  const res = await fetch(`${API}/api/runtime`, {method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify({
+    provider: document.getElementById("runtime-provider").value,
+    base_url: document.getElementById("runtime-url").value.trim(),
+    model: document.getElementById("runtime-model").value.trim(),
+    api_key: document.getElementById("runtime-key").value || null,
+    allow_remote: document.getElementById("runtime-remote").checked,
+    monitor_enabled: document.getElementById("runtime-monitor").checked,
+  })});
+  const data = await res.json();
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Check the AI connection settings.");
+  document.getElementById("runtime-key").value = "";
+}
+let runtimeBusy = false;
+async function configureAI(test) {
+  if (runtimeBusy) return;
+  runtimeBusy = true;
+  const msg = document.getElementById("runtime-message");
+  const save = document.getElementById("runtime-save"), testButton = document.getElementById("runtime-test");
+  save.disabled = testButton.disabled = true;
+  msg.textContent = test ? "Saving and testing a synthetic image. This may take a moment…" : "Saving…";
+  try {
+    await saveRuntime();
+    if (test) {
+      const res = await fetch(`${API}/api/runtime/test`, {method:"POST"});
+      const data = await res.json();
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Connection test failed.");
+      msg.textContent = `${data.message} (${data.seconds}s)`;
+    } else msg.textContent = "Settings saved. Test the connection before using visual chat.";
+    await loadRuntime();
+    await pollStatus();
+  } catch (err) { msg.textContent = err.message; }
+  finally { runtimeBusy = false; save.disabled = false; runtimeFields(); }
+}
+document.getElementById("runtime-form").onsubmit = e => { e.preventDefault(); configureAI(false); };
+document.getElementById("runtime-test").onclick = () => configureAI(true);
 
 /* ---------- init ---------- */
 

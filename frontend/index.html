@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sentinel Vision</title>
+  <title>Argus · Video Intelligence</title>
+  <link rel="icon" href="assets/argus-mark.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -12,35 +13,30 @@
 <body>
   <div class="app">
     <nav class="rail">
-      <div class="rail-brand" title="Sentinel Vision">
-        <span class="brand-mark"></span>
+      <div class="rail-brand" title="Argus · Video Intelligence">
+        <span class="brand-mark"><img src="assets/argus-mark.svg" alt="Argus, the many-eyed guardian" /></span><span class="brand-word">argus<span>VIDEO INTELLIGENCE</span></span>
       </div>
 
-      <button class="rail-btn active" data-view="dashboard" title="Search">
+      <button class="rail-btn active" data-view="dashboard" title="Overview">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg>
-        <span>Search</span>
+        <span>Overview</span>
       </button>
       <button class="rail-btn" data-view="chat" title="Chat">
         <svg viewBox="0 0 24 24"><path d="M4 4h16v12H7l-3 3V4z"/></svg>
-        <span>Chat</span>
+        <span>Live analyst</span>
       </button>
       <button class="rail-btn" data-view="alerts" title="Alerts">
         <svg viewBox="0 0 24 24"><path d="M12 2a6 6 0 00-6 6v4l-2 4h16l-2-4V8a6 6 0 00-6-6zm0 18a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 20z"/></svg>
-        <span>Alerts</span>
+        <span>Activity</span>
         <span class="rail-badge" id="rail-alerts-badge" hidden></span>
       </button>
       <button class="rail-btn" data-view="rules" title="Alert Rules">
         <svg viewBox="0 0 24 24"><path d="M4 5h16v2H4V5zm0 6h10v2H4v-2zm0 6h16v2H4v-2zm13-7l3 3-3 3v-2h-4v-2h4V10z"/></svg>
         <span>Rules</span>
       </button>
-      <button class="rail-btn disabled" data-view="archive" title="Archive — coming soon">
-        <svg viewBox="0 0 24 24"><path d="M3 4h18v4H3V4zm1 5h16v11H4V9zm4 3v2h8v-2H8z"/></svg>
-        <span>Archive</span>
-        <span class="soon">soon</span>
-      </button>
       <button class="rail-btn" data-view="directory" title="Directory">
         <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
-        <span>Directory</span>
+        <span>Cameras</span>
         <span class="rail-badge" id="rail-cameras-badge" hidden></span>
       </button>
       <button class="rail-btn" data-view="health" title="System health">
@@ -48,7 +44,10 @@
         <span>Health</span>
       </button>
 
-      <div class="rail-spacer"></div>
+      <button class="rail-btn" data-view="cpu" title="CPU tools"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="10" y="10" width="4" height="4"/></svg><span>CPU tools</span></button>
+      <button class="rail-btn" data-view="runtime" title="AI setup"><svg viewBox="0 0 24 24"><path d="M12 3v4m0 10v4M3 12h4m10 0h4M6 6l3 3m6 6l3 3M6 18l3-3m6-6l3-3"/><circle cx="12" cy="12" r="4"/></svg><span>AI setup</span></button>
+      <a class="rail-btn docs-link" href="/docs/" title="Documentation"><svg viewBox="0 0 24 24"><path d="M4 3h12l4 4v14H4zM8 9h8M8 13h8M8 17h5"/></svg><span>Documentation</span></a>
+      <div class="rail-spacer"></div><div class="workspace-card"><span class="workspace-avatar">A</span><div>Argus workspace<small>Local intelligence</small></div></div>
       <div class="rail-status" id="rail-status" title="Model status">
         <span class="dot"></span>
       </div>
@@ -56,23 +55,23 @@
 
     <div class="main-col">
       <header class="topbar">
-        <div class="topbar-title" id="topbar-title">Search</div>
+        <div class="topbar-breadcrumb">Workspace <span>/</span> <span class="topbar-title" id="topbar-title">Overview</span></div>
         <div class="topbar-status">
           <span id="model-status" class="pill pill-loading">
             <span class="dot"></span> Loading model…
           </span>
-          <span class="clock" id="clock"></span>
+          <button class="text-button" id="setup-shortcut">AI setup</button><span class="clock" id="clock"></span><button class="btn-icon" id="presentation-toggle" title="Toggle fullscreen">Present ↗</button>
         </div>
       </header>
 
       <!-- ============ SEARCH / DASHBOARD ============ -->
       <section class="view" id="view-dashboard">
         <div class="search-page">
-          <div class="stat-row" id="stat-row"></div>
+          <div class="page-heading"><div><div class="eyebrow">YOUR SITE, IN SIGHT</div><h1>See what matters.</h1><p>A clear view of your cameras. Answers grounded in what they see.</p></div><button class="btn-primary" id="open-analyst">Open live analyst ↗</button></div><div class="stat-row" id="stat-row"></div>
 
           <div class="search-hero">
-            <h1 class="search-title">What are you looking for?</h1>
-            <p class="search-subtitle">Ask in plain language — across one camera or the whole site.</p>
+            <div class="analyst-kicker"><span class="analyst-symbol">✳</span> ASK ARGUS <span class="subtle">Current camera frames</span></div><h2 class="search-title">Your cameras have a story. Just ask.</h2>
+            <p class="search-subtitle">Understand the scene, inspect an answer, and keep the conversation going.</p>
 
             <form id="search-form" class="search-form">
               <svg class="search-form-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg>
@@ -80,10 +79,10 @@
                 id="search-input"
                 class="search-input"
                 type="text"
-                placeholder="Describe what you're looking for…"
+                placeholder="What is happening across the cameras?"
                 autocomplete="off"
               />
-              <button type="submit" class="search-submit" id="search-submit" aria-label="Search">
+              <button type="submit" class="search-submit" id="search-submit" aria-label="Ask Argus">
                 <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>
               </button>
             </form>
@@ -94,17 +93,16 @@
           <div class="search-result" id="search-result" hidden></div>
 
           <div class="search-lower">
-            <div class="recent-queries-col">
-              <div class="section-label">Recent queries</div>
-              <div class="recent-queries" id="recent-queries">
-                <div class="empty-state-inline">Nothing asked yet this session.</div>
-              </div>
-            </div>
-
             <div class="fleet-strip-col">
-              <div class="section-label">Live sources</div>
+              <div class="section-heading"><div><h2>Camera overview</h2><p>Choose a source to open the live analyst.</p></div><span class="source-legend">● Current frames</span></div>
               <div class="fleet-strip" id="fleet-strip"></div>
             </div>
+            <aside class="activity-panel">
+              <div class="section-heading"><h2>Recent activity</h2><button class="text-button" id="view-all-events">View all ↗</button></div>
+              <div id="overview-activity"><div class="empty-state-inline">Loading activity…</div></div>
+              <div class="section-label recent-label">Your recent questions</div>
+              <div class="recent-queries" id="recent-queries"></div>
+            </aside>
           </div>
 
           <div class="quick-actions">
@@ -114,7 +112,7 @@
             </button>
             <button class="quick-action" id="qa-add-camera">
               <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
-              Add camera
+              Manage cameras
             </button>
             <button class="quick-action" id="qa-add-rule">
               <svg viewBox="0 0 24 24"><path d="M12 2a6 6 0 00-6 6v4l-2 4h16l-2-4V8a6 6 0 00-6-6z"/></svg>
@@ -128,7 +126,7 @@
       <section class="view" id="view-chat" hidden>
         <div class="chat-layout">
           <div class="chat-strip-col">
-            <div class="chat-strip" id="chat-strip"></div>
+            <div class="section-label">SOURCES</div><div class="chat-strip" id="chat-strip"></div>
           </div>
 
           <div class="viewer">
@@ -137,7 +135,7 @@
                 <div class="viewer-title" id="viewer-title">Select a source</div>
                 <div class="viewer-location" id="viewer-location">&nbsp;</div>
               </div>
-              <div class="live-badge"><span class="dot dot-live"></span>LIVE</div>
+              <div class="live-badge" id="viewer-source-label">Select a source</div>
             </div>
             <div class="viewer-frame">
               <img id="viewer-stream" class="viewer-stream" alt="Camera stream" />
@@ -145,34 +143,35 @@
                 Choose a source from the strip to begin monitoring
               </div>
             </div>
+            <div class="viewer-note"><span class="analyst-symbol">✳</span><div><strong>Watch. Ask. Verify.</strong><p>Answers use recent sampled frames. Open an evidence image to inspect what Argus saw.</p></div></div>
           </div>
 
           <div class="chat">
             <div class="chat-header">
               <div>
-                <span>AI Analyst</span>
-                <span class="chat-sub">Ask about any source, or all of them at once</span>
+                <span><span class="analyst-symbol">✳</span> Argus analyst</span>
+                <span class="chat-sub">A conversation grounded in your cameras</span>
               </div>
               <button class="btn-icon" id="btn-clear-chat" title="Clear conversation">Clear</button>
             </div>
 
-            <div id="chat-log" class="chat-log">
+            <div class="scope-control"><label for="chat-scope">Look at</label><select id="chat-scope"><option value="camera">Selected camera</option><option value="fleet">All cameras</option><option value="auto">Let Argus choose</option><option value="cpu">CPU measurements (no model)</option></select></div><div id="chat-log" class="chat-log" role="log" aria-live="polite">
               <div class="chat-empty" id="chat-empty">
                 No conversation yet. Try one of the prompts below, or ask your own question.
               </div>
             </div>
 
-            <div id="prompt-chips" class="prompt-chips"></div>
+            <div id="prompt-chips" class="prompt-chips"></div><div id="chat-progress" class="chat-progress" role="status" hidden></div>
 
             <form id="chat-form" class="chat-form">
               <input
                 id="chat-input"
                 class="chat-input"
                 type="text"
-                placeholder="Ask about a source, or all of them…"
+                placeholder="Ask about what you see…" aria-label="Question for Argus" maxlength="2000"
                 autocomplete="off"
               />
-              <button type="submit" class="chat-send" id="chat-send">Ask</button>
+              <button type="submit" class="chat-send" id="chat-send">Send ↑</button>
             </form>
           </div>
         </div>
@@ -188,7 +187,7 @@
 
           <div class="events-charts" id="events-charts"></div>
 
-          <div class="events-toolbar">
+          <div class="events-toolbar"><button class="btn-ghost" id="export-events">Export CSV ↓</button>
             <input type="text" id="events-search" class="events-search" placeholder="Search events…" />
             <select id="events-camera-filter" class="events-select">
               <option value="">All sources</option>
@@ -211,13 +210,13 @@
           <div class="alert-rules-panel">
             <div class="alert-rules-header">
               <span>Alert rules</span>
-              <span class="events-sub">Tell the monitor what to specifically watch for, per source or across the fleet.</span>
+              <span class="events-sub">Watch for visible people, objects, or scene conditions. Matches are sampled and should be reviewed.</span>
             </div>
             <form id="alert-rule-form" class="alert-rule-form">
               <select id="alert-rule-camera" class="events-select">
                 <option value="">All sources</option>
               </select>
-              <input type="text" id="alert-rule-target" placeholder='e.g. &quot;car&quot;, &quot;backpack left behind&quot;' required />
+              <input type="text" id="alert-rule-target" placeholder='e.g. &quot;a person carrying a backpack&quot;' required />
               <button type="submit" class="btn-primary">Add rule</button>
             </form>
             <div class="alert-rules-list" id="alert-rules-list"></div>
@@ -247,6 +246,62 @@
         </div>
       </section>
 
+      <section class="view" id="view-cpu" hidden>
+        <div class="cpu-page">
+          <div class="page-heading"><div><div class="eyebrow">OPENCV · NO MODEL REQUIRED</div><h1>Intelligence starts here.</h1><p>Measure motion, watch an area, and check image quality on your CPU.</p></div><a class="guide-link" href="/docs/#cpu">How CPU analysis works ↗</a></div>
+          <div class="cpu-toolbar"><label for="cpu-camera">Source</label><select id="cpu-camera" class="events-select"></select><span id="cpu-engine-state" role="status">Loading CPU measurements…</span></div>
+          <div class="cpu-metrics" id="cpu-metrics"></div>
+          <div class="cpu-layout">
+            <div class="cpu-visual"><div class="section-heading"><h2>Watch area &amp; motion regions</h2><button class="btn-ghost" id="cpu-download">Save snapshot ↓</button></div>
+              <div class="cpu-frame"><img id="cpu-preview" alt="CPU analysis preview with watch area and motion regions" /><svg id="cpu-zone-editor" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Drag to choose a watch area"><rect id="cpu-zone-rect" x="0" y="0" width="100" height="100" /></svg><div id="cpu-preview-message">Waiting for a source…</div></div>
+              <p class="cpu-hint">Drag over the image to set a rectangular watch area, or enter percentages. Dashed line: your pending area. Solid lines: saved area and measured motion regions. Save to apply.</p>
+              <div class="cpu-spark-heading"><span>Recent motion</span><span>Last 60 samples · this browser session</span></div><div id="cpu-spark" class="cpu-spark" aria-label="Recent motion percentage"></div>
+            </div>
+            <form id="cpu-form" class="runtime-card"><h2>CPU watch settings</h2>
+              <label class="check-field"><input type="checkbox" id="cpu-enabled" checked /> Enable CPU analysis for this source</label>
+              <label class="check-field"><input type="checkbox" id="cpu-motion-alerts" checked /> Save motion events and evidence</label>
+              <label class="check-field"><input type="checkbox" id="cpu-quality-alerts" /> Save low-light / low-detail warnings</label>
+              <label class="check-field"><input type="checkbox" id="cpu-face-alerts" /> Detect faces (Haar cascade) and save events</label>
+              <label class="check-field"><input type="checkbox" id="cpu-people-alerts" /> Detect people (HOG pedestrian detector) and save events</label>
+              <label class="field"><span>Motion trigger (% of watch area)</span><input type="number" id="cpu-threshold" min="0.1" max="80" step="0.1" value="2" required /></label>
+              <label class="field"><span>Minimum seconds between events of the same type</span><input type="number" id="cpu-cooldown" min="5" max="3600" value="30" required /></label>
+              <div class="area-fields"><label class="field"><span>Left %</span><input type="number" id="cpu-x" min="0" max="95" value="0" step="1" required /></label><label class="field"><span>Top %</span><input type="number" id="cpu-y" min="0" max="95" value="0" step="1" required /></label><label class="field"><span>Width %</span><input type="number" id="cpu-width" min="5" max="100" value="100" step="1" required /></label><label class="field"><span>Height %</span><input type="number" id="cpu-height" min="5" max="100" value="100" step="1" required /></label></div>
+              <button type="button" id="cpu-reset-area" class="text-button">Reset to full frame</button>
+              <details class="cpu-advanced"><summary>Image-quality thresholds</summary><label class="field"><span>Low light below brightness (0–255)</span><input id="cpu-dark" type="number" min="1" max="150" value="25" /></label><label class="field"><span>Low detail below edge score</span><input id="cpu-blur" type="number" min="1" max="1000" value="30" /></label></details>
+              <p>Motion is pixel change, not a person count. Lighting changes can trigger it. Low-detail warnings can also indicate a naturally plain scene. Face/people detection run every few seconds (heavier than motion) and can miss partial or side-on views.</p>
+              <button class="btn-primary" type="submit" id="cpu-save">Save watch settings</button><div id="cpu-save-message" class="runtime-message" role="status"></div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-runtime" hidden>
+        <div class="runtime-page">
+          <div class="page-heading"><div><div class="eyebrow">BUILT FOR YOUR SETUP</div><h1>Your hardware. Your choice.</h1><p>CPU analysis works immediately. Add a vision model when you need scene understanding.</p></div></div>
+          <div class="runtime-grid">
+            <form id="runtime-form" class="runtime-card">
+              <h2>Connect an AI analyst</h2><a class="guide-link" href="/docs/#ollama">Setup guides: Ollama, llama.cpp, hosted API &amp; Qwen ↗</a>
+              <p>Use a vision-capable model on your own server or through a hosted provider. Argus never switches providers automatically.</p>
+              <div class="setup-presets"><button type="button" class="btn-ghost" id="preset-ollama">Ollama preset</button><button type="button" class="btn-ghost" id="preset-llama">llama.cpp preset</button></div>
+              <label class="field"><span>AI connection</span><select id="runtime-provider"><option value="none">CPU tools only — no vision model</option><option value="compatible">Local or hosted vision API</option><option value="embedded">Embedded Qwen — NVIDIA GPU required</option></select></label>
+              <div id="runtime-api-fields" hidden>
+                <label class="field"><span>API base URL (including /v1)</span><input id="runtime-url" type="url" placeholder="http://localhost:11434/v1" /></label>
+                <label class="field"><span>Vision model name</span><input id="runtime-model" placeholder="Exact model name from your server" /></label>
+                <label class="field"><span>API key (optional for local servers)</span><input id="runtime-key" type="password" autocomplete="new-password" placeholder="Stored on this Argus server" /></label>
+                <p>Ollama and llama.cpp can expose compatible vision APIs. The selected model must support image input; speed depends on your server.</p>
+                <label class="check-field"><input id="runtime-remote" type="checkbox" /> Allow frames to be sent to this server outside this machine.</label>
+              </div>
+              <p id="runtime-embedded-note" hidden>Requires the GPU dependencies and enough VRAM for Qwen2.5-VL-7B. The first test may download model weights. A detected GPU does not guarantee sufficient memory.</p>
+              <label class="check-field"><input id="runtime-monitor" type="checkbox" /> Enable background visual monitoring on this connection.</label>
+              <p>Background monitoring makes additional model requests. Hosted providers may charge for chat and monitoring. A failed connection stays unavailable until you choose another.</p>
+              <div class="modal-actions"><button class="btn-ghost" type="submit" id="runtime-save">Save settings</button><button class="btn-primary" type="button" id="runtime-test">Test vision connection</button></div>
+              <div id="runtime-message" class="runtime-message" role="status"></div>
+            </form>
+            <div class="runtime-card"><h2>What works on this setup</h2><div id="runtime-capabilities">Checking your server…</div><p id="runtime-hardware"></p><p>Connection testing sends one synthetic red image, never a camera frame. Saving settings alone does not contact a provider.</p></div>
+          </div>
+        </div>
+      </section>
+
       <!-- ============ HEALTH ============ -->
       <section class="view" id="view-health" hidden>
         <div class="health-page" id="health-page"></div>
@@ -256,7 +311,7 @@
 
   <!-- ============ ADD CAMERA MODAL ============ -->
   <div class="modal-overlay" id="modal-overlay" hidden>
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Source settings">
       <div class="modal-header">
         <span>Add source</span>
         <button class="modal-close" id="modal-close">&times;</button>
@@ -308,7 +363,7 @@
 
   <!-- ============ EDIT CAMERA MODAL ============ -->
   <div class="modal-overlay" id="edit-modal-overlay" hidden>
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Source settings">
       <div class="modal-header">
         <span>Edit source</span>
         <button class="modal-close" id="edit-modal-close">&times;</button>
@@ -341,6 +396,12 @@
     </div>
   </div>
 
+  <dialog id="evidence-dialog" class="evidence-dialog">
+    <div class="modal-header"><span>Visual evidence</span><button id="evidence-close" class="btn-icon" aria-label="Close evidence">Close ×</button></div>
+    <img id="evidence-image" alt="Frame used for this analysis" />
+    <p id="evidence-caption"></p>
+  </dialog>
   <script src="app.js"></script>
+  <script src="cpu.js"></script>
 </body>
 </html>
