@@ -4,7 +4,7 @@ import io
 import logging
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import cv2
 import numpy as np
@@ -14,10 +14,7 @@ from . import yolo
 from .camera import registry
 from .db import SessionLocal
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AlertRule, Camera, CpuConfig, Detection, Event
-
-# How long to keep the dense per-tick detection log before pruning.
-DETECTION_RETENTION_HOURS = 24
+from .models import AlertRule, Camera, CpuConfig, Event
 
 log = logging.getLogger("argus.cpu")
 
@@ -169,7 +166,10 @@ class CpuMonitor:
         self._frames = {}
         self._settings = {}
         self._generation = {}
-        self._last_pruned = 0.0
+        # (camera_id, category) -> {"event_id": int, "confidence": float|None}
+        # for the most recent row in the current uninterrupted run of that
+        # detection — lets a higher-confidence repeat steal the snapshot.
+        self._active_runs = {}
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -188,6 +188,8 @@ class CpuMonitor:
             self._states.pop(camera_id, None)
             self._frames.pop(camera_id, None)
             self._generation[camera_id] = self._generation.get(camera_id, 0) + 1
+            for run_key in [k for k in self._active_runs if k[0] == camera_id]:
+                self._active_runs.pop(run_key, None)
 
     def status(self, camera_id):
         with self._lock:
@@ -217,20 +219,8 @@ class CpuMonitor:
                 log.exception("CPU analysis tick failed")
             self._stop.wait(max(0.05, 0.5 - (time.monotonic() - started)))
 
-    def _prune_detections(self, db):
-        # Runs at most every 10 minutes — a delete query on every 0.5s tick
-        # would cost far more than the table it's pruning.
-        now = time.monotonic()
-        if now - self._last_pruned < 600:
-            return
-        self._last_pruned = now
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=DETECTION_RETENTION_HOURS)
-        db.query(Detection).filter(Detection.created_at < cutoff).delete()
-        db.commit()
-
     def tick(self):
         with SessionLocal() as db:
-            self._prune_detections(db)
             cameras = db.query(Camera).all()
             configs = {row.camera_id: row.settings for row in db.query(CpuConfig).all()}
             ids = {camera.id for camera in cameras}
@@ -239,6 +229,8 @@ class CpuMonitor:
                     for key in list(mapping):
                         if key not in ids:
                             mapping.pop(key, None)
+                for run_key in [k for k in self._active_runs if k[0] not in ids]:
+                    self._active_runs.pop(run_key, None)
             for camera in cameras:
                 try:
                     settings = CpuSettings(**configs.get(camera.id, {}))
@@ -251,6 +243,41 @@ class CpuMonitor:
                 except Exception:
                     db.rollback()
                     log.exception("CPU analysis failed for source %s", camera.id)
+
+    def _resolve_object_severity(self, db, camera_id, target):
+        rule = (
+            db.query(AlertRule)
+            .filter(AlertRule.enabled.is_(True), AlertRule.source == "cpu", AlertRule.target == target)
+            .filter((AlertRule.camera_id == camera_id) | (AlertRule.camera_id.is_(None)))
+            .first()
+        )
+        return rule.severity if rule else "info"
+
+    def _log_detection_row(self, db, camera_id, category, severity, summary, drawn, confidence=None):
+        """Every detection sample becomes a row here — no gating, no cooldown.
+        Rules (and their severity) are a property of the row, not a gate on
+        whether it exists. Within a back-to-back run of the same
+        (camera, category), only one sample keeps its snapshot — the
+        highest-confidence one when confidence is available (object
+        detections), otherwise the first sample in the run (face/people,
+        which have no per-sample accuracy score to compare) — the rest log
+        without a snapshot to bound storage growth."""
+        run_key = (camera_id, category)
+        run = self._active_runs.get(run_key)
+        if run is None:
+            keep_snapshot = True
+        elif confidence is not None and run["confidence"] is not None:
+            keep_snapshot = confidence > run["confidence"]
+        else:
+            keep_snapshot = False  # no confidence to compare: first-in-run already has it
+        snapshot = image_to_data_uri(frame_to_pil(drawn)) if keep_snapshot else None
+        event = Event(camera_id=camera_id, severity=severity, category=category, summary=summary,
+                      snapshot=snapshot, confidence=round(confidence * 100) if confidence is not None else None)
+        db.add(event)
+        db.flush()  # assign event.id without a full commit
+        if keep_snapshot and run is not None:
+            db.query(Event).filter(Event.id == run["event_id"]).update({"snapshot": None})
+        self._active_runs[run_key] = {"event_id": event.id, "confidence": confidence}
 
     def process(self, db, camera, frame, settings):
         started = time.monotonic()
@@ -272,26 +299,15 @@ class CpuMonitor:
         active = dict(old["active"]) if old else {}
         last_event = dict(old["last_event"]) if old else {}
         now = time.monotonic()
+        # Motion/quality are continuous pixel-diff signals that would fire on
+        # nearly every tick forever — these still log only on a state change,
+        # via the existing streak+cooldown gate.
         candidates = []
         checks = [
             ("motion", settings.motion_alerts, result["motion"], "CPU · Motion detected", "info"),
             ("low_light", settings.quality_alerts, result["low_light"], "CPU · Low-light frame", "warning"),
             ("low_detail", settings.quality_alerts, result["low_detail"], "CPU · Low detail / possible blur", "warning"),
         ]
-        if run_detectors:
-            checks.append(("face", settings.face_alerts, result.get("face_count", 0) > 0, "CPU · Face detected", "info"))
-            checks.append(("people", settings.people_alerts, result.get("people_count", 0) > 0, "CPU · Person detected", "info"))
-        if run_detectors and settings.object_alerts:
-            detected_classes = {obj["class"] for obj in result.get("objects", [])}
-            rules = (
-                db.query(AlertRule)
-                .filter(AlertRule.enabled.is_(True), AlertRule.source == "cpu")
-                .filter((AlertRule.camera_id == camera.id) | (AlertRule.camera_id.is_(None)))
-                .all()
-            )
-            for rule in rules:
-                flag = f"object:{rule.target}"
-                checks.append((flag, True, rule.target in detected_classes, f"CPU · {rule.target.title()} detected", rule.severity))
         for flag, enabled, detected, category, severity in checks:
             streaks[flag] = streaks.get(flag, 0) + 1 if detected else 0
             quiet_key = flag + "_quiet"
@@ -299,33 +315,44 @@ class CpuMonitor:
             if streaks[quiet_key] >= 4:
                 active[flag] = False
             if enabled and streaks[flag] >= 2 and not active.get(flag) and now - last_event.get(flag, -float("inf")) >= settings.cooldown_seconds:
-                candidates.append((flag, category, severity))
+                candidates.append((category, severity))
                 active[flag] = True
                 last_event[flag] = now
         drawn = annotate(frame, result, settings)
         ok, jpeg = cv2.imencode(".jpg", drawn, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         result.update({"sampled_at": time.time(), "checked_at": datetime.now(timezone.utc).isoformat(), "analysis_ms": round((time.monotonic() - started) * 1000, 1), "area": settings.area.model_dump()})
-        # Dense per-tick log: every time a detector actually ran (not the
-        # carried-forward ticks in between), regardless of whether anything
-        # changed. Distinct from Event, which only logs state changes.
-        log_detection = run_detectors and (settings.face_alerts or settings.people_alerts or settings.object_alerts)
         # A saved configuration invalidates any in-flight result from the old area.
         with self._lock:
             if generation != self._generation.get(camera.id, 0):
                 return
-            if candidates:
-                snapshot = image_to_data_uri(frame_to_pil(drawn))
-                for flag, category, severity in candidates:
-                    summary = f"OpenCV measurement in the watch area: changed pixels {result['motion_percent']}%; brightness {result['brightness']}/255; edge-detail score {result['sharpness']}; faces {result.get('face_count', 0)}; people {result.get('people_count', 0)}. No identity inferred."
-                    db.add(Event(camera_id=camera.id, severity=severity, category=category, summary=summary, snapshot=snapshot))
-            if log_detection:
-                db.add(Detection(
-                    camera_id=camera.id,
-                    face_count=result.get("face_count", 0),
-                    people_count=result.get("people_count", 0),
-                    objects=[{"class": o["class"], "confidence": o["confidence"]} for o in result.get("objects", [])],
-                ))
-            if candidates or log_detection:
+            summary = f"OpenCV measurement in the watch area: changed pixels {result['motion_percent']}%; brightness {result['brightness']}/255; edge-detail score {result['sharpness']}; faces {result.get('face_count', 0)}; people {result.get('people_count', 0)}. No identity inferred."
+            wrote_anything = False
+            for category, severity in candidates:
+                self._log_detection_row(db, camera.id, category, severity, summary, drawn)
+                wrote_anything = True
+            if run_detectors:
+                seen_categories = set()
+                if settings.face_alerts and result.get("face_count", 0) > 0:
+                    self._log_detection_row(db, camera.id, "CPU · Face detected", "info", summary, drawn)
+                    seen_categories.add("CPU · Face detected")
+                    wrote_anything = True
+                if settings.people_alerts and result.get("people_count", 0) > 0:
+                    self._log_detection_row(db, camera.id, "CPU · Person detected", "info", summary, drawn)
+                    seen_categories.add("CPU · Person detected")
+                    wrote_anything = True
+                if settings.object_alerts:
+                    for obj in result.get("objects", []):
+                        category = f"CPU · {obj['class'].title()} detected"
+                        severity = self._resolve_object_severity(db, camera.id, obj["class"])
+                        self._log_detection_row(db, camera.id, category, severity, summary, drawn, confidence=obj["confidence"])
+                        seen_categories.add(category)
+                        wrote_anything = True
+                # A category not detected on this detector tick has ended its
+                # run — clear it so the next occurrence starts fresh (gets a
+                # snapshot) instead of being compared against a stale run.
+                for run_key in [k for k in self._active_runs if k[0] == camera.id and k[1] not in seen_categories]:
+                    self._active_runs.pop(run_key, None)
+            if wrote_anything:
                 db.commit()
             self._states[camera.id] = {"gray": gray, "result": result, "streaks": streaks, "active": active, "last_event": last_event, "tick": tick}
             self._settings[camera.id] = settings.model_dump()
@@ -336,14 +363,14 @@ class CpuMonitor:
 def events_csv(events):
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "camera_id", "created_at", "severity", "category", "summary"])
+    writer.writerow(["id", "camera_id", "created_at", "severity", "category", "confidence", "summary"])
     def safe(value):
         text = str(value or "")
         # Prevent spreadsheet formula evaluation in text exported from model output.
         return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")) else text
     for event in events:
         row = event.to_dict()
-        writer.writerow([safe(row[key]) for key in ("id", "camera_id", "created_at", "severity", "category", "summary")])
+        writer.writerow([safe(row[key]) for key in ("id", "camera_id", "created_at", "severity", "category", "confidence", "summary")])
     return output.getvalue()
 
 

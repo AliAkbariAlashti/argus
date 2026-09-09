@@ -75,11 +75,15 @@ class ChatMessage(Base):
 
 
 class Event(Base):
-    """A system-detected occurrence from the background monitor — not a
-    user chat turn. Logged only on a state change (something entering or
-    leaving view, a weapon becoming visible), so the table stays a
-    meaningful timeline instead of one row per monitor poll. Feeds the
-    Alerts tab."""
+    """A system-detected occurrence — from the background VLM monitor or CPU
+    tools' own detectors (motion, face, people, object). This is the single,
+    full log across every camera and every kind of detection; the Activity
+    page is a search/filter view over this table, with alert rules as one of
+    the filter dimensions rather than a gate on what gets logged at all.
+
+    `confidence` is set for object detections (from YOLO) and used to decide
+    which snapshot survives when the same detection repeats back-to-back
+    (see cpu.py's dedup logic) — otherwise null."""
 
     __tablename__ = "events"
 
@@ -89,6 +93,7 @@ class Event(Base):
     category = Column(String, nullable=False)
     summary = Column(Text, nullable=False, default="")
     snapshot = Column(Text, nullable=True)
+    confidence = Column(Integer, nullable=True)  # stored as an integer percent (0-100); null when not applicable
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     def to_dict(self):
@@ -99,6 +104,7 @@ class Event(Base):
             "category": self.category,
             "summary": self.summary,
             "snapshot": self.snapshot,
+            "confidence": self.confidence,
             "created_at": _utc_iso(self.created_at),
         }
 
@@ -146,32 +152,3 @@ class CpuConfig(Base):
     __tablename__ = "cpu_configs"
     camera_id = Column(String, primary_key=True)
     settings = Column(JSON, nullable=False, default=dict)
-
-
-class Detection(Base):
-    """One row per CPU detector tick (face/people/object), regardless of
-    whether anything changed — a dense log for analytics/debugging, distinct
-    from Event's one-row-per-state-change history meant for a human to read.
-    No snapshot stored here; at this frequency that would grow unbounded.
-    Rows older than DETECTION_RETENTION_HOURS are pruned (see cpu.py)."""
-
-    __tablename__ = "detections"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    camera_id = Column(String, nullable=False)
-    face_count = Column(Integer, nullable=False, default=0)
-    people_count = Column(Integer, nullable=False, default=0)
-    # [{"class": "car", "confidence": 0.87}, ...] — boxes are dropped, they're
-    # only useful with the frame they were drawn on, which isn't kept here.
-    objects = Column(JSON, nullable=False, default=list)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "camera_id": self.camera_id,
-            "face_count": self.face_count,
-            "people_count": self.people_count,
-            "objects": self.objects or [],
-            "created_at": _utc_iso(self.created_at),
-        }

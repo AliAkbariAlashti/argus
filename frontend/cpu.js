@@ -79,23 +79,17 @@ async function loadDetectionLog() {
   if (detectionLogPollBusy) return;
   detectionLogPollBusy = true;
   try {
-    const res = await fetch(`${API}/api/detections?camera_id=${cpuId}&limit=100`);
+    const res = await fetch(`${API}/api/events?camera_id=${cpuId}&limit=100`);
     if (!res.ok) return;
     const rows = await res.json();
     detectionLogLastId = rows[0]?.id ?? detectionLogLastId;
     if (rows.length === 0) {
-      logEl.innerHTML = '<div class="empty-state-inline">No detections logged yet. Enable face, people, or object detection above to start collecting samples.</div>';
+      logEl.innerHTML = '<div class="empty-state-inline">No detections logged yet. Enable a detector above to start collecting samples — this is the same log shown in full on the Activity page.</div>';
       return;
     }
     logEl.innerHTML = rows.map(r => {
-      const counts = [];
-      if (r.face_count) counts.push(`${r.face_count} face${r.face_count === 1 ? '' : 's'}`);
-      if (r.people_count) counts.push(`${r.people_count} ${r.people_count === 1 ? 'person' : 'people'} (HOG)`);
-      const objectSummary = r.objects.length
-        ? r.objects.map(o => `${escapeHtml(o.class)} ${(o.confidence * 100).toFixed(0)}%`).join(', ')
-        : '';
-      const summary = [...counts, objectSummary].filter(Boolean).join(' · ') || 'No detections this sample';
-      return `<div class="detection-log-row"><span class="detection-log-time">${new Date(r.created_at).toLocaleTimeString()}</span><span class="detection-log-summary">${summary}</span></div>`;
+      const confidence = r.confidence !== null && r.confidence !== undefined ? ` (${r.confidence}%)` : '';
+      return `<div class="detection-log-row event-${r.severity}"><span class="detection-log-time">${new Date(r.created_at).toLocaleTimeString()}</span><span class="detection-log-summary">${escapeHtml(r.category)}${confidence}</span></div>`;
     }).join('');
   } catch (e) {
     // Transient errors shouldn't break the rest of the page.

@@ -135,12 +135,15 @@
         to Info) but you can change it, per rule, at any time. VLM rules are always logged as Warning — only a
         connected vision model can flag something Critical (a possible weapon), since COCO's fixed 80 classes that
         power CPU detection don't include one.</p>
-        <h3>Two different logs</h3>
-        <p>The <strong>Activity</strong> page shows one entry per state change — a car enters frame, a person leaves
-        — so it stays readable instead of repeating the same ongoing detection every few seconds. If you want the
-        raw, high-frequency detection data instead (every sampled tick, every class and confidence, no de-duplication
-        or cooldown), that's available at <code>/api/detections</code> for analytics or debugging detection
-        quality. It intentionally does not store snapshots at that frequency and is pruned after 24 hours.</p>
+        <h3>One log for everything</h3>
+        <p>Every detection — face, person, object, or a rule match — is logged to the <strong>Activity</strong> page:
+        every camera, every kind, in one searchable timeline. Motion and image-quality checks still only log on a
+        state change (a continuous ongoing condition doesn't repeat every few seconds), but face/people/object
+        detections log every time they're actually sampled. The <strong>CPU tools</strong> page shows the same log,
+        filtered to whichever camera you're configuring.</p>
+        <p class="note">To bound storage as detections repeat back-to-back, only one snapshot survives per
+        uninterrupted run of the same detection on the same camera — the highest-confidence sample for object
+        detections, or the first sample of the run otherwise. Every row still logs; only the image is trimmed.</p>
       </section>
 
       <section id="history">
