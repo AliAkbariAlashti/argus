@@ -1,79 +1,138 @@
-# Sentinel Vision
+# Argus — video intelligence MVP
 
-AI vision chatbot for CCTV monitoring — MVP. Point a Qwen2.5-VL-7B vision-language
-model at live camera feeds and ask natural-language questions about what's
-currently happening on screen.
+A camera workspace with an overview, live video analyst, saved visual evidence,
+activity feed, watch rules, source management, and hardware-aware AI setup.
 
-For this MVP, "cameras" are looping local video files that simulate live feeds.
-Adding a real IP camera (RTSP) is exposed in the UI as a coming-soon option;
-swapping it in later only requires changing how `CameraFeed` opens its source
-in [backend/app/camera.py](backend/app/camera.py) — everything downstream
-(streaming, snapshots, chat) is unchanged.
+The included sources are **looping demo video files**, clearly labeled in the UI.
+Visual answers come from the configured model, never canned demo responses.
+This version does not include RTSP integration or historical video retrieval.
 
-## Architecture
-
-```
-videos/*.mp4  →  CameraFeed (loops file, decodes latest frame)  →  MJPEG stream (viewer)
-                                                                 →  snapshot (VLM input)
-Postgres (camera metadata: name, location, zone tags, description)
-                        Qwen2.5-VL-7B-Instruct  ←  /api/chat  ←  frontend chat panel
-```
-
-A question like "what's in the parking lot" is grounded before it ever reaches
-the model: the camera's own metadata (name/location/zone tags/description) is
-folded into the prompt so the model answers in context, instead of the app
-running a separate retrieval step. See [backend/app/grounding.py](backend/app/grounding.py).
-
-- `backend/` — FastAPI app: camera loop manager, model wrapper, camera CRUD, REST API, serves the frontend.
-- `frontend/` — static HTML/CSS/JS single-page app (Dashboard / Chat / Alerts* / Archive* / Cameras). No build step.
-- `videos/` — sample + uploaded footage used as simulated camera feeds.
-- `docker-compose.yml` — Postgres for camera metadata.
-
-## Running on the GPU VM
+## Start without a GPU
 
 ```bash
-cd ~/dok
-git clone <this-repo-url> qwenvl
-cd qwenvl
-
-docker compose up -d          # starts Postgres on :5432
-
-source ~/dok/venv/bin/activate   # existing venv already has torch/transformers/etc.
-pip install sqlalchemy "psycopg[binary]"   # new deps for camera CRUD storage
-
-bash backend/run.sh              # starts in the background, on :8000
+docker compose -f compose.mvp.yml up --build -d
 ```
 
-Then open `http://<vm-ip>:8000` in a browser.
+Open **http://localhost:8090**. Four included videos populate a new database.
+The CPU app can display sources, upload videos, manage rules, and show saved
+activity. No model weights or CUDA packages are downloaded by this profile.
+The database, uploaded media, and AI settings use separate persistent volumes.
+Use `ARGUS_PORT=8092` if the default port is occupied.
 
-First request after startup will be slow while Qwen2.5-VL-7B loads into GPU
-memory (~15-20s). Check `/api/status` to see when `model_ready` is `true`.
-On first boot, the cameras table is empty and gets seeded automatically with
-the 4 sample videos in `videos/`.
+The MVP is a single trusted workspace without authentication or tenant isolation.
+The Compose profile binds to localhost; use a local browser or SSH tunnel for a
+private presentation. Add authentication and permissions before customer exposure.
 
-### Managing the background process
+### Connect the analyst
 
-`backend/run.sh` starts the server detached (via `nohup`) and returns immediately,
-tracking it with a PID file so it survives closing the SSH session.
+Open **AI setup** and choose:
+
+| Connection | Requirements | Data path |
+|---|---|---|
+| Camera viewing only | CPU and PostgreSQL | No model calls |
+| Local vision API | A running, image-capable model server | Frames go to your chosen server |
+| Hosted vision API | Compatible endpoint, model name, API key if required | Sampled frames go to your provider; charges may apply |
+| Embedded Qwen | GPU dependency profile and sufficient NVIDIA VRAM | Model inference on the Argus host |
+
+Full setup guides (Ollama, llama.cpp, hosted APIs, embedded Qwen, environment
+variables, troubleshooting) are served at `/docs/` once the app is running.
+
+### CPU tools (no model required)
+
+Every profile, including the plain CPU one, runs OpenCV measurements per camera
+on a background thread: motion (frame differencing in a chosen watch area),
+brightness/low-light, sharpness/blur, face detection (Haar cascade), and people
+detection (HOG pedestrian descriptor). Face/people detection is heavier than the
+other measurements, so it runs on a slower sampling cadence and only when
+enabled per camera. None of this downloads model weights or calls a remote
+service. See `/docs/#cpu` for details and limits.
+
+For a compatible API, enter its base URL **including `/v1`**, exact vision model
+name, and optional key. The protocol is streaming `/chat/completions` with image
+inputs. Examples of compatible servers:
+[Ollama](https://docs.ollama.com/api/openai-compatibility) and
+[llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md).
+Compatibility still depends on the specific model and server configuration.
+
+Inside Docker, `localhost` refers to the app container, not your host. Use an
+address reachable from the container for a model hosted elsewhere. Argus requires
+explicit permission before sending frames to a non-loopback server, including LAN
+servers. Keys are stored in a private settings file, excluded from Git and never
+returned by the settings API. This is file protection, not encrypted secret storage.
+
+**Save settings** does not contact the model. **Test vision connection** saves the
+settings and sends one synthetic red image. A passing test enables visual chat.
+Compatible APIs must be tested again after restarting the app. Embedded Qwen's
+first test may download weights. The CPU Docker image does not contain its GPU
+packages; run the GPU profile in a separately prepared environment.
+
+Background visual monitoring is **off by default**. Enable it explicitly in setup;
+it generates additional model requests. There is no automatic provider failover:
+a disconnected model produces an actionable error, while camera viewing remains
+available. Local CPU model serving is possible through compatible servers, but
+latency and usable model size depend on that server's resources.
+
+## Presentation flow
+
+1. Open Overview: four source previews, actual recent detection counts, and AI status.
+2. Choose a camera. Keep its video visible beside the analyst.
+3. Ask “What is happening right now?” The model streams a single-camera answer.
+4. Open the evidence snapshot to inspect the actual frame used.
+5. Ask a follow-up, or select All cameras to compare current scenes. Fleet answers
+   are delivered when complete so internal camera-routing markers stay hidden.
+6. Open Activity to review existing detections and their snapshots. Enable monitoring
+   and add a visible-condition rule to demonstrate sampled automatic observations.
+7. Open AI setup to explain local, hosted, and GPU deployment options honestly.
+
+Without a model connection, demonstrate viewing and setup; camera metadata questions
+such as “How many cameras are there?” still work. Visual chat requires a real
+vision backend. Camera status, event counts and analysis outputs are not fabricated.
+
+## Development
 
 ```bash
-bash backend/status.sh   # confirms it's running + hits /api/status
-bash backend/stop.sh     # stops it
-tail -f backend/server.log   # follow logs
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements-core.txt
+# Point to a dedicated PostgreSQL database; do not reuse another application's DB.
+export DATABASE_URL='postgresql+psycopg://USER:PASSWORD@localhost:5432/argus'
+uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8090
 ```
 
-`run.sh` refuses to start a second instance while one is already running —
-run `stop.sh` first if you need to restart.
+`backend/requirements.txt` preserves the original GPU VM dependency profile and adds
+HTTP support. It is not needed for CPU/API operation. `backend/run.sh` remains the
+legacy GPU VM launcher. `docker-compose.yml` remains its original PostgreSQL setup;
+use `compose.mvp.yml` for the new full app profile.
 
-### Config
+Settings default to `backend/data/runtime.json`. Override with `ARGUS_RUNTIME_FILE`.
+Other controls: `VIDEOS_DIR`, `QWENVL_MODEL_ID`, `CHAT_FRAMES_SINGLE_CAMERA`,
+`VLM_MIN_PIXELS`, `VLM_MAX_PIXELS`, `CHAT_HISTORY_TURNS`, `MONITOR_ENABLED`,
+`MONITOR_MIN_VLM_INTERVAL_SECONDS`, and `MONITOR_MOTION_THRESHOLD`.
 
-Environment variables (all optional, see [backend/app/config.py](backend/app/config.py)):
+## Validation
 
-- `DATABASE_URL` — Postgres connection string (default matches `docker-compose.yml`: `postgresql+psycopg://sentinel:sentinel@localhost:5432/sentinelvision`)
-- `VIDEOS_DIR` — path to video files (default: `<repo>/videos`)
-- `QWENVL_MODEL_ID` — HF model id (default: `Qwen/Qwen2.5-VL-7B-Instruct`)
-- `PORT` — server port (default: `8000`)
-- `CHAT_FRAMES_SINGLE_CAMERA` — frames sent per single-camera question (default `3`; more frames = better motion understanding, more VRAM)
-- `VLM_MAX_IMAGE_EDGE` — longest edge in px of frames sent to the model (default `896`)
-- `CHAT_HISTORY_TURNS` — prior turns replayed as context (default `6`)
-- `PREWARM_MODEL` — run a throwaway inference at startup so the first question is fast (default on; set `0` to disable)
+```bash
+pip install pytest
+PYTHONPATH=backend pytest backend/tests/test_runtime.py backend/tests/test_monitor.py backend/tests/test_camera.py
+# Integration tests require an isolated PostgreSQL database. They clear chat history.
+ARGUS_TEST_DATABASE=1 DATABASE_URL='postgresql+psycopg://USER:PASSWORD@localhost:5432/argus_test' \
+  PYTHONPATH=backend pytest backend/tests/test_chat_api.py
+node --check frontend/app.js
+# Browser checks against a running isolated app; AI responses are test fixtures only.
+npm install
+npx playwright install chromium
+ARGUS_URL=http://127.0.0.1:8090 npm run test:ui
+# Or use an installed browser: CHROME_PATH=/usr/bin/google-chrome
+```
+
+## Current limits
+
+- One shared conversation and one active interactive request per server. Busy requests
+  are rejected explicitly. No multi-user permissions yet.
+- Analysis uses sampled frames; model observations are fallible. No calibrated
+  accuracy claim, guaranteed detection latency, or production capacity claim.
+- History contains conversations and event snapshots, not searchable recorded video.
+- File sources only. IP cameras, recording retention, robust tracking, incident
+  acknowledgement and notification delivery are subsequent milestones.
+- Configuration supports one active provider; automatic routing, cost quotas,
+  heterogeneous device scheduling and production secrets management are future work.
