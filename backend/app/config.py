@@ -74,6 +74,14 @@ SEED_CAMERAS = [
         "source_type": "file",
         "source_path": "mixkit-hands-of-a-person-typing-on-a-cell-phone-4915-hd-ready.mp4",
     },
+    {
+        "name": "Street Junction",
+        "location": "Main Entrance - Street Level",
+        "zone_tags": ["street", "exterior", "traffic", "crosswalk"],
+        "description": "Overhead view of a busy street junction with pedestrian and vehicle traffic.",
+        "source_type": "file",
+        "source_path": "mixkit-crowds-of-people-cross-a-street-junction-4401-hd-ready.mp4",
+    },
 ]
 
 SUGGESTED_PROMPTS = [

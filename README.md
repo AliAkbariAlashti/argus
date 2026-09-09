@@ -13,7 +13,7 @@ This version does not include RTSP integration or historical video retrieval.
 docker compose -f compose.mvp.yml up --build -d
 ```
 
-Open **http://localhost:8090**. Four included videos populate a new database.
+Open **http://localhost:8090**. Five included videos populate a new database.
 The CPU app can display sources, upload videos, manage rules, and show saved
 activity. No model weights or CUDA packages are downloaded by this profile.
 The database, uploaded media, and AI settings use separate persistent volumes.
@@ -74,7 +74,7 @@ latency and usable model size depend on that server's resources.
 
 ## Presentation flow
 
-1. Open Overview: four source previews, actual recent detection counts, and AI status.
+1. Open Overview: five source previews, actual recent detection counts, and AI status.
 2. Choose a camera. Keep its video visible beside the analyst.
 3. Ask “What is happening right now?” The model streams a single-camera answer.
 4. Open the evidence snapshot to inspect the actual frame used.
