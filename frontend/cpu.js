@@ -131,7 +131,7 @@ document.getElementById('preset-ollama').onclick = () => {
   document.getElementById('runtime-remote').checked = false;
   document.getElementById('runtime-key').value = '';
   runtimeFields();
-  document.getElementById('runtime-message').textContent = 'Preset filled, not saved. Follow the Ollama guide to install and pull the vision model. Docker users: see the container networking guide.';
+  document.getElementById('runtime-message').textContent = 'Preset filled, not saved. Follow the Ollama guide to install and pull the vision model.';
 };
 document.getElementById('preset-llama').onclick = () => {
   document.getElementById('runtime-provider').value = 'compatible';

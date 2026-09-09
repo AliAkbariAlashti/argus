@@ -74,7 +74,6 @@
       </ul>
       <h3>Reference</h3>
       <ul>
-        <li><a href="#env-vars">Environment variables</a></li>
         <li><a href="#troubleshooting">Troubleshooting</a></li>
       </ul>
     </nav>
@@ -99,10 +98,9 @@
 
       <section id="cpu">
         <h2>CPU tools (OpenCV) <span class="tag">NO MODEL REQUIRED</span></h2>
-        <p>Every Argus install — including the plain <code>compose.mvp.yml</code> profile with no GPU — runs a set of
-        classical computer-vision measurements per camera, on a background thread, using
-        <a class="quiet" href="https://opencv.org/" target="_blank" rel="noopener">OpenCV</a>. These are not AI in the
-        model-inference sense: no weights are downloaded and nothing is inferred about identity or intent.</p>
+        <p>Every Argus install — with or without a GPU — runs a set of classical computer-vision measurements per
+        camera in the background. These are not AI in the model-inference sense: no weights are downloaded and
+        nothing is inferred about identity or intent.</p>
         <h3>What it measures</h3>
         <table>
           <tr><th>Feature</th><th>How</th><th>Output</th></tr>
@@ -141,10 +139,8 @@ curl -fsSL https://ollama.com/install.sh | sh
           <tr><td>Vision model name</td><td><code>gemma3:4b</code> (must match the tag you pulled)</td></tr>
           <tr><td>API key</td><td>leave blank</td></tr>
         </table>
-        <p class="note">Argus runs inside Docker in the MVP profile. <code>localhost</code> from inside the container
-        is the container itself, not your host machine. Use <code>http://host.docker.internal:11434/v1</code> on
-        Docker Desktop, or your host's LAN IP on Linux — and check "allow frames to be sent outside this machine" if
-        Ollama isn't on the loopback interface.</p>
+        <p class="note">If Ollama runs on a different machine than Argus, use that machine's address instead of
+        <code>localhost</code>, and check "allow frames to be sent outside this machine".</p>
         <h3>4. Test the connection</h3>
         <p>Click <strong>Test vision connection</strong>. A pass means the streaming <code>/chat/completions</code>
         call with an image succeeded end to end. Restart Ollama or change models and you'll need to re-test.</p>
@@ -179,8 +175,8 @@ cmake --build build --config Release -j</code></pre>
           <tr><td>Vision model name</td><td><code>argus-vision</code> (must match <code>--alias</code>)</td></tr>
           <tr><td>API key</td><td>leave blank unless you set <code>--api-key</code></td></tr>
         </table>
-        <p class="note">Same Docker networking caveat as Ollama: <code>localhost</code> inside the Argus container
-        does not reach a server on your host. Use a container-reachable address.</p>
+        <p class="note">Same networking note as Ollama: if llama-server runs on a different machine, use that
+        machine's address instead of <code>localhost</code>.</p>
       </section>
 
       <section id="hosted">
@@ -204,47 +200,17 @@ cmake --build build --config Release -j</code></pre>
         directly inside the Argus backend process — no separate server. This is the heaviest option and needs a
         prepared GPU environment.</p>
         <h3>Requirements</h3>
-        <table>
-          <tr><th>Component</th><th>Confirmed working with</th></tr>
-          <tr><td>GPU</td><td>NVIDIA, ~20GB VRAM (e.g. RTX 4000 Ada)</td></tr>
-          <tr><td>CUDA</td><td>13.0</td></tr>
-          <tr><td>Python</td><td>3.12</td></tr>
-          <tr><td>PyTorch</td><td>2.12.1+cu130</td></tr>
-          <tr><td>Transformers</td><td>5.8.0</td></tr>
-          <tr><td>Accelerate</td><td>1.14.0</td></tr>
-        </table>
-        <h3>Install</h3>
-        <p>The GPU dependency profile is not in <code>requirements-core.txt</code> (which stays CPU/API-only on
-        purpose). Install <code>backend/requirements.txt</code> in a GPU-prepared environment, then run the
-        <code>embedded</code> provider from AI setup.</p>
-        <p class="note">A detected GPU does not guarantee sufficient free VRAM. The model idles around 18.5GB/20GB
-        once loaded, so the first <strong>Test vision connection</strong> click may take a while — it can trigger a
-        multi-GB weight download the first time.</p>
-      </section>
-
-      <section id="env-vars">
-        <h2>Environment variables</h2>
-        <p>Most of these have sane defaults; set them only to change behavior.</p>
-        <table>
-          <tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
-          <tr><td><code>DATABASE_URL</code></td><td>—</td><td>PostgreSQL connection string. Use a dedicated database.</td></tr>
-          <tr><td><code>ARGUS_RUNTIME_FILE</code></td><td><code>backend/data/runtime.json</code></td><td>Where AI setup / provider settings are persisted.</td></tr>
-          <tr><td><code>VIDEOS_DIR</code></td><td><code>./videos</code></td><td>Directory of source video files.</td></tr>
-          <tr><td><code>QWENVL_MODEL_ID</code></td><td><code>Qwen/Qwen2.5-VL-7B-Instruct</code></td><td>Embedded model to load.</td></tr>
-          <tr><td><code>CHAT_FRAMES_SINGLE_CAMERA</code></td><td><code>3</code></td><td>Frames sent per camera on a single-camera question.</td></tr>
-          <tr><td><code>VLM_MIN_PIXELS</code> / <code>VLM_MAX_PIXELS</code></td><td>256×28² / 768×28²</td><td>Per-frame resolution/VRAM budget for the embedded model.</td></tr>
-          <tr><td><code>CHAT_HISTORY_TURNS</code></td><td><code>6</code></td><td>Prior conversation turns replayed to the model.</td></tr>
-          <tr><td><code>MONITOR_ENABLED</code></td><td><code>1</code></td><td>Background visual monitoring (motion-gated VLM calls).</td></tr>
-          <tr><td><code>MONITOR_MIN_VLM_INTERVAL_SECONDS</code></td><td><code>20</code></td><td>Minimum time between model calls for the same camera.</td></tr>
-          <tr><td><code>MONITOR_MOTION_THRESHOLD</code></td><td><code>0.02</code></td><td>Motion fraction that gates a monitor check.</td></tr>
-        </table>
+        <p>An NVIDIA GPU with at least 20GB of VRAM. Choose <em>Embedded Qwen</em> in <strong>AI setup</strong> — Argus
+        checks your hardware and tells you whether it's usable.</p>
+        <p class="note">A detected GPU does not guarantee sufficient free VRAM. The first <strong>Test vision
+        connection</strong> click may take a while — it can trigger a multi-GB weight download the first time.</p>
       </section>
 
       <section id="troubleshooting">
         <h2>Troubleshooting</h2>
         <h3>"Test vision connection" fails</h3>
         <ul>
-          <li>Confirm the base URL includes <code>/v1</code> and is reachable from inside the Argus container, not just your host.</li>
+          <li>Confirm the base URL includes <code>/v1</code> and is reachable from the machine running Argus.</li>
           <li>Confirm the model name matches exactly what the server reports (<code>ollama list</code>, or the llama.cpp <code>--alias</code>).</li>
           <li>Restarted the model server since the last test? Test again — connections aren't re-validated automatically.</li>
         </ul>

@@ -612,10 +612,6 @@ el.viewerStream.onload = () => { el.viewerStream.classList.add("visible"); el.vi
 el.viewerStream.onerror = () => { el.viewerStream.classList.remove("visible"); el.viewerPlaceholder.style.display = "block"; el.viewerPlaceholder.textContent = "Source unavailable. Reopen the camera to reconnect."; };
 document.getElementById("open-analyst").onclick = () => switchView("chat");
 document.getElementById("view-all-events").onclick = () => switchView("alerts");
-document.getElementById("presentation-toggle").onclick = async () => {
-  try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); }
-  catch (_) { document.getElementById("presentation-toggle").textContent = "Use browser fullscreen"; }
-};
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") { closeCameraModal(); closeEditModal(); }
 });
