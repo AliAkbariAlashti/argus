@@ -1,0 +1,34 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "127.0.0.1:${ARGUS_PORT:-8090}:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://argus:argus-local@db:5432/argus
+    volumes:
+      - argus_settings:/app/backend/data
+      - argus_videos:/app/videos
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: argus
+      POSTGRES_PASSWORD: argus-local
+      POSTGRES_DB: argus
+    volumes:
+      - argus_database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argus -d argus"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+volumes:
+  argus_settings:
+  argus_videos:
+  argus_database:

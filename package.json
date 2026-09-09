@@ -1,0 +1,9 @@
+{
+  "name": "argus-workspace-checks",
+  "private": true,
+  "scripts": {
+    "check": "node --check frontend/app.js",
+    "test:ui": "node frontend/tests/smoke.cjs"
+  },
+  "devDependencies": { "playwright": "1.63.0" }
+}

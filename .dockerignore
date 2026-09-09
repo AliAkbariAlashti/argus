@@ -1,0 +1,10 @@
+.git
+.claude
+backend/data
+backend/tests
+backend/*.log
+backend/*.pid
+**/__pycache__
+.venv
+node_modules
+frontend/tests
