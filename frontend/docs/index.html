@@ -67,6 +67,7 @@
       <ul>
         <li><a href="#overview">Overview</a></li>
         <li><a href="#cpu">CPU tools (OpenCV)</a></li>
+        <li><a href="#history">Searching your history</a></li>
         <li><a href="#ollama">Ollama</a></li>
         <li><a href="#llamacpp">llama.cpp</a></li>
         <li><a href="#hosted">Hosted vision API</a></li>
@@ -124,6 +125,22 @@
         that camera and finds a match, with no vision model connected at all. Choosing <em>AI vision model</em>
         instead lets you describe anything in plain language ("a person carrying a backpack"), but only works once a
         model is connected in <strong>AI setup</strong>.</p>
+      </section>
+
+      <section id="history">
+        <h2>Searching your history <span class="tag">NO MODEL REQUIRED</span></h2>
+        <p>Every detection — from CPU tools or a connected vision model — is logged with its camera, category, and
+        timestamp. On the <strong>Activity</strong> page, ask in plain language:</p>
+        <ul>
+          <li>"When did you last see a person on Server Room?"</li>
+          <li>"Show me car events on East Corridor in the last hour"</li>
+          <li>"Any critical events today?"</li>
+        </ul>
+        <p>This is a plain search over what's already logged, not a model call — it matches your question against
+        camera names, object/detection keywords, severity, and relative time phrases ("today", "last hour", "last 3
+        days"), then answers directly with the matching event and when it happened.</p>
+        <p class="note">Only things Argus has actually detected and logged can be found this way. It searches
+        history — it does not look at live video or infer anything new about a past moment.</p>
       </section>
 
       <section id="ollama">

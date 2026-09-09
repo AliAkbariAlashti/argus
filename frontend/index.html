@@ -187,6 +187,12 @@
 
           <div class="events-charts" id="events-charts"></div>
 
+          <form id="history-ask-form" class="history-ask">
+            <input type="text" id="history-ask-input" placeholder='Ask about history — e.g. "when did you last see a person on Server Room"' />
+            <button type="submit" class="btn-primary">Ask</button>
+          </form>
+          <div id="history-ask-answer" class="history-ask-answer" role="status" hidden></div>
+
           <div class="events-toolbar"><button class="btn-ghost" id="export-events">Export CSV ↓</button>
             <input type="text" id="events-search" class="events-search" placeholder="Search events…" />
             <select id="events-camera-filter" class="events-select">

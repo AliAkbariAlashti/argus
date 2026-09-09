@@ -6,6 +6,7 @@ import time
 import shutil
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +43,7 @@ from .models import AlertRule, Camera, ChatMessage, Event, CpuConfig
 from .monitor import monitor
 from .runtime import vlm
 from . import yolo
+from . import history
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("qwenvl.main")
@@ -293,6 +295,7 @@ def list_events(
     camera_id: Optional[str] = None,
     severity: Optional[str] = None,
     q: Optional[str] = None,
+    since: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Event).order_by(Event.id.desc())
@@ -303,8 +306,51 @@ def list_events(
     if q:
         like = f"%{q}%"
         query = query.filter(Event.summary.ilike(like) | Event.category.ilike(like))
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="since must be an ISO-8601 timestamp.")
+        # created_at is stored naive-UTC (see models._utc_iso); strip any offset to match.
+        query = query.filter(Event.created_at >= since_dt.replace(tzinfo=None))
     rows = query.limit(min(limit, 500)).all()
     return [r.to_dict() for r in rows]
+
+
+@app.get("/api/events/ask")
+def ask_events_history(question: str, db: Session = Depends(get_db)):
+    """Rule-based natural-language search over logged events — no model call.
+    'When did you last see a person on camera 1' resolves to a plain
+    filtered query, since every event already carries camera/category/time."""
+    question = question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="A question is required.")
+    cameras = [{"id": c.id, "name": c.name, "zone_tags": c.zone_tags} for c in db.query(Camera).all()]
+    parsed = history.parse_question(question, cameras)
+
+    query = db.query(Event).order_by(Event.id.desc())
+    if parsed["camera_id"]:
+        query = query.filter(Event.camera_id == parsed["camera_id"])
+    if parsed["severity"]:
+        query = query.filter(Event.severity == parsed["severity"])
+    if parsed["q"]:
+        like = f"%{parsed['q']}%"
+        query = query.filter(Event.summary.ilike(like) | Event.category.ilike(like))
+    if parsed["since"]:
+        query = query.filter(Event.created_at >= datetime.fromisoformat(parsed["since"]).replace(tzinfo=None))
+    rows = query.limit(parsed["limit"]).all()
+
+    camera_names = {c.id: c.name for c in db.query(Camera).all()}
+    events = [r.to_dict() for r in rows]
+    if not events:
+        answer = "No matching events found."
+    elif parsed["limit"] == 1:
+        row = events[0]
+        answer = f"Last seen: {row['category']} on {camera_names.get(row['camera_id'], row['camera_id'])}, {row['created_at']}."
+    else:
+        answer = f"{len(events)} matching event(s)."
+
+    return {"question": question, "parsed": parsed, "answer": answer, "events": events}
 
 
 @app.get("/api/events/export")

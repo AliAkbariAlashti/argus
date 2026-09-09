@@ -49,6 +49,9 @@ const el = {
   eventsCameraFilter: document.getElementById("events-camera-filter"),
   eventsSeverityFilter: document.getElementById("events-severity-filter"),
   railAlertsBadge: document.getElementById("rail-alerts-badge"),
+  historyAskForm: document.getElementById("history-ask-form"),
+  historyAskInput: document.getElementById("history-ask-input"),
+  historyAskAnswer: document.getElementById("history-ask-answer"),
 
   alertRuleForm: document.getElementById("alert-rule-form"),
   alertRuleCamera: document.getElementById("alert-rule-camera"),
@@ -974,6 +977,24 @@ el.eventsCameraFilter.addEventListener("change", () => {
 el.eventsSeverityFilter.addEventListener("change", () => {
   eventFilters.severity = el.eventsSeverityFilter.value;
   loadEvents();
+});
+
+el.historyAskForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const question = el.historyAskInput.value.trim();
+  if (!question) return;
+  el.historyAskAnswer.hidden = false;
+  el.historyAskAnswer.textContent = "Searching…";
+  try {
+    const res = await fetch(`${API}/api/events/ask?${new URLSearchParams({ question })}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Could not answer that question.");
+    el.historyAskAnswer.textContent = data.answer;
+    latestEvents = data.events;
+    renderEvents();
+  } catch (err) {
+    el.historyAskAnswer.textContent = err.message;
+  }
 });
 
 function renderAlertsBadge() {
