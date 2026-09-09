@@ -39,7 +39,7 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AlertRule, Camera, ChatMessage, Event, CpuConfig
+from .models import AlertRule, Camera, ChatMessage, Detection, Event, CpuConfig
 from .monitor import monitor
 from .runtime import vlm
 from . import yolo
@@ -314,6 +314,29 @@ def list_events(
         # created_at is stored naive-UTC (see models._utc_iso); strip any offset to match.
         query = query.filter(Event.created_at >= since_dt.replace(tzinfo=None))
     rows = query.limit(min(limit, 500)).all()
+    return [r.to_dict() for r in rows]
+
+
+@app.get("/api/detections")
+def list_detections(
+    limit: int = 200,
+    camera_id: Optional[str] = None,
+    since: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Dense per-tick detection log (every ~3s while enabled), for analytics
+    and debugging detection quality — not the human-facing Activity feed,
+    which only logs state changes. See models.Detection."""
+    query = db.query(Detection).order_by(Detection.id.desc())
+    if camera_id:
+        query = query.filter(Detection.camera_id == camera_id)
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="since must be an ISO-8601 timestamp.")
+        query = query.filter(Detection.created_at >= since_dt.replace(tzinfo=None))
+    rows = query.limit(min(limit, 2000)).all()
     return [r.to_dict() for r in rows]
 
 

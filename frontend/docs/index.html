@@ -125,6 +125,15 @@
         that camera and finds a match, with no vision model connected at all. Choosing <em>AI vision model</em>
         instead lets you describe anything in plain language ("a person carrying a backpack"), but only works once a
         model is connected in <strong>AI setup</strong>.</p>
+        <p class="note"><strong>A rule only fires if its detector is actually enabled on that camera.</strong> A CPU
+        "car" rule does nothing until you also turn on object detection for that camera here on the CPU tools page —
+        the rule and the detector are two separate switches.</p>
+        <h3>Two different logs</h3>
+        <p>The <strong>Activity</strong> page shows one entry per state change — a car enters frame, a person leaves
+        — so it stays readable instead of repeating the same ongoing detection every few seconds. If you want the
+        raw, high-frequency detection data instead (every sampled tick, every class and confidence, no de-duplication
+        or cooldown), that's available at <code>/api/detections</code> for analytics or debugging detection
+        quality. It intentionally does not store snapshots at that frequency and is pruned after 24 hours.</p>
       </section>
 
       <section id="history">

@@ -4,7 +4,7 @@ import io
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import cv2
 import numpy as np
@@ -14,7 +14,10 @@ from . import yolo
 from .camera import registry
 from .db import SessionLocal
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AlertRule, Camera, CpuConfig, Event
+from .models import AlertRule, Camera, CpuConfig, Detection, Event
+
+# How long to keep the dense per-tick detection log before pruning.
+DETECTION_RETENTION_HOURS = 24
 
 log = logging.getLogger("argus.cpu")
 
@@ -166,6 +169,7 @@ class CpuMonitor:
         self._frames = {}
         self._settings = {}
         self._generation = {}
+        self._last_pruned = 0.0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -213,8 +217,20 @@ class CpuMonitor:
                 log.exception("CPU analysis tick failed")
             self._stop.wait(max(0.05, 0.5 - (time.monotonic() - started)))
 
+    def _prune_detections(self, db):
+        # Runs at most every 10 minutes — a delete query on every 0.5s tick
+        # would cost far more than the table it's pruning.
+        now = time.monotonic()
+        if now - self._last_pruned < 600:
+            return
+        self._last_pruned = now
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=DETECTION_RETENTION_HOURS)
+        db.query(Detection).filter(Detection.created_at < cutoff).delete()
+        db.commit()
+
     def tick(self):
         with SessionLocal() as db:
+            self._prune_detections(db)
             cameras = db.query(Camera).all()
             configs = {row.camera_id: row.settings for row in db.query(CpuConfig).all()}
             ids = {camera.id for camera in cameras}
@@ -289,6 +305,10 @@ class CpuMonitor:
         drawn = annotate(frame, result, settings)
         ok, jpeg = cv2.imencode(".jpg", drawn, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         result.update({"sampled_at": time.time(), "checked_at": datetime.now(timezone.utc).isoformat(), "analysis_ms": round((time.monotonic() - started) * 1000, 1), "area": settings.area.model_dump()})
+        # Dense per-tick log: every time a detector actually ran (not the
+        # carried-forward ticks in between), regardless of whether anything
+        # changed. Distinct from Event, which only logs state changes.
+        log_detection = run_detectors and (settings.face_alerts or settings.people_alerts or settings.object_alerts)
         # A saved configuration invalidates any in-flight result from the old area.
         with self._lock:
             if generation != self._generation.get(camera.id, 0):
@@ -299,6 +319,14 @@ class CpuMonitor:
                     summary = f"OpenCV measurement in the watch area: changed pixels {result['motion_percent']}%; brightness {result['brightness']}/255; edge-detail score {result['sharpness']}; faces {result.get('face_count', 0)}; people {result.get('people_count', 0)}. No identity inferred."
                     severity = "info" if flag in ("motion", "face", "people") or flag.startswith("object:") else "warning"
                     db.add(Event(camera_id=camera.id, severity=severity, category=category, summary=summary, snapshot=snapshot))
+            if log_detection:
+                db.add(Detection(
+                    camera_id=camera.id,
+                    face_count=result.get("face_count", 0),
+                    people_count=result.get("people_count", 0),
+                    objects=[{"class": o["class"], "confidence": o["confidence"]} for o in result.get("objects", [])],
+                ))
+            if candidates or log_detection:
                 db.commit()
             self._states[camera.id] = {"gray": gray, "result": result, "streaks": streaks, "active": active, "last_event": last_event, "tick": tick}
             self._settings[camera.id] = settings.model_dump()
