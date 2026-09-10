@@ -353,9 +353,7 @@
 
         <div class="field-tabs">
           <div class="field-tab active" data-source="file">Video file</div>
-          <div class="field-tab field-tab-disabled" data-source="rtsp">
-            IP Camera / RTSP <span class="soon">soon</span>
-          </div>
+          <div class="field-tab" data-source="rtsp">IP Camera / RTSP</div>
         </div>
 
         <label class="field" id="field-video">
@@ -363,9 +361,9 @@
           <input type="file" name="video" accept="video/*" required />
         </label>
 
-        <label class="field field-disabled" id="field-rtsp" hidden>
-          <span>RTSP URL <span class="soon">coming soon</span></span>
-          <input type="text" placeholder="rtsp://..." disabled />
+        <label class="field" id="field-rtsp" hidden>
+          <span>RTSP URL</span>
+          <input type="url" name="rtsp_url" placeholder="rtsp://192.168.1.50:8554/camera" disabled />
         </label>
 
         <div class="modal-error" id="camera-form-error" hidden></div>
@@ -401,6 +399,15 @@
         <label class="field">
           <span>Description</span>
           <textarea name="description" rows="3"></textarea>
+        </label>
+
+        <label class="field">
+          <span>Source type</span>
+          <select name="source_type" id="edit-source-type" disabled><option value="file">Video file</option><option value="rtsp">IP Camera / RTSP</option></select>
+        </label>
+        <label class="field" id="edit-field-rtsp" hidden>
+          <span>RTSP URL</span>
+          <input type="url" name="source_path" placeholder="rtsp://192.168.1.50:8554/camera" />
         </label>
 
         <div class="modal-error" id="edit-camera-form-error" hidden></div>

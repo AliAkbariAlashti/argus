@@ -699,16 +699,32 @@ el.modalOverlay.addEventListener("click", (e) => {
   if (e.target === el.modalOverlay) closeCameraModal();
 });
 
+let cameraSourceType = "file";
+
+function setCameraSourceType(sourceType) {
+  cameraSourceType = sourceType;
+  document.querySelectorAll(".field-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.source === sourceType));
+  const videoField = document.getElementById("field-video");
+  const rtspField = document.getElementById("field-rtsp");
+  const videoInput = videoField.querySelector("input");
+  const rtspInput = rtspField.querySelector("input");
+  videoField.hidden = sourceType !== "file";
+  rtspField.hidden = sourceType !== "rtsp";
+  videoInput.disabled = sourceType !== "file";
+  videoInput.required = sourceType === "file";
+  rtspInput.disabled = sourceType !== "rtsp";
+  rtspInput.required = sourceType === "rtsp";
+}
+
 document.querySelectorAll(".field-tab").forEach((tab) => {
   tab.addEventListener("click", () => {
-    if (tab.classList.contains("field-tab-disabled")) return;
-    document.querySelectorAll(".field-tab").forEach((t) => t.classList.remove("active"));
-    tab.classList.add("active");
+    setCameraSourceType(tab.dataset.source);
   });
 });
 
 function openCameraModal() {
   el.cameraForm.reset();
+  setCameraSourceType("file");
   el.cameraFormError.hidden = true;
   el.modalOverlay.hidden = false;
 }
@@ -724,6 +740,7 @@ el.cameraForm.addEventListener("submit", async (e) => {
   el.btnSubmitCamera.textContent = "Adding…";
 
   const formData = new FormData(el.cameraForm);
+  formData.set("source_type", cameraSourceType);
 
   // Video uploads can be several MB; give it real headroom but never hang
   // the modal forever if the server or network stalls.
@@ -766,6 +783,10 @@ function openEditModal(cam) {
   f.elements.location.value = cam.location || "";
   f.elements.zone_tags.value = (cam.zone_tags || []).join(", ");
   f.elements.description.value = cam.description || "";
+  f.elements.source_type.value = cam.source_type || "file";
+  f.elements.source_path.value = cam.source_type === "rtsp" ? cam.source_path || "" : "";
+  document.getElementById("edit-field-rtsp").hidden = cam.source_type !== "rtsp";
+  f.elements.source_path.required = cam.source_type === "rtsp";
   el.editCameraFormError.hidden = true;
   el.editModalOverlay.hidden = false;
 }
@@ -780,7 +801,6 @@ el.btnCancelEditCamera.addEventListener("click", closeEditModal);
 el.editModalOverlay.addEventListener("click", (e) => {
   if (e.target === el.editModalOverlay) closeEditModal();
 });
-
 el.editCameraForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!editingCameraId) return;
@@ -798,7 +818,9 @@ el.editCameraForm.addEventListener("submit", async (e) => {
       .map((t) => t.trim())
       .filter(Boolean),
     description: f.elements.description.value.trim(),
+    source_type: f.elements.source_type.value,
   };
+  if (payload.source_type === "rtsp") payload.source_path = f.elements.source_path.value.trim();
 
   try {
     const res = await fetch(`${API}/api/cameras/${editingCameraId}`, {

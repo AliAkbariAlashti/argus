@@ -54,6 +54,13 @@ const assert = require('node:assert/strict');
       await page.locator(`.rail-btn[data-view="${view}"]`).click();
       assert(await page.locator(`#view-${view}`).isVisible());
     }
+    await page.locator('.rail-btn[data-view="directory"]').click();
+    await page.locator('#btn-add-camera').click();
+    await page.locator('.field-tab[data-source="rtsp"]').click();
+    assert(await page.locator('#field-rtsp').isVisible());
+    assert(!await page.locator('#field-video').isVisible());
+    await page.keyboard.press('Escape');
+    await page.locator('.rail-btn[data-view="runtime"]').click();
     assert(await page.locator('#runtime-active-card').isVisible());
     assert(await page.locator('#runtime-profiles-list').isVisible());
     assert(await page.locator('#runtime-stats').isVisible());

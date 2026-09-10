@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 import anyio
 from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
@@ -104,7 +105,7 @@ def _seed_and_start_cameras():
             db.commit()
 
         for camera in db.query(Camera).all():
-            registry.add(camera.id, camera.source_path)
+            registry.add(camera.id, camera.source_path, camera.source_type)
     finally:
         db.close()
 
@@ -205,49 +206,68 @@ def get_camera(cam_id: str, db: Session = Depends(get_db)):
 ALLOWED_VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 
 
+def _validate_rtsp_url(value: str) -> str:
+    value = value.strip()
+    parsed = None
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port  # also reject malformed or out-of-range ports
+    except ValueError:
+        hostname = None
+    if parsed is None or parsed.scheme not in ("rtsp", "rtsps") or not hostname:
+        raise HTTPException(400, "Enter a valid RTSP URL, for example rtsp://192.168.1.50:8554/camera.")
+    if any(char.isspace() for char in value):
+        raise HTTPException(400, "The RTSP URL cannot contain spaces.")
+    return value
+
+
 @app.post("/api/cameras")
 async def create_camera(
     name: str = Form(...),
     location: str = Form(""),
     zone_tags: str = Form(""),  # comma-separated
     description: str = Form(""),
+    source_type: str = Form("file"),
+    rtsp_url: str = Form(""),
     video: Optional[UploadFile] = None,
     db: Session = Depends(get_db),
 ):
-    if video is None:
-        raise HTTPException(
-            status_code=400,
-            detail="A video file is required (IP camera / RTSP connections are coming soon).",
-        )
-
-    ext = Path(video.filename or "").suffix.lower()
-    if ext not in ALLOWED_VIDEO_EXT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported video format '{ext}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXT))}",
-        )
-
     tags = [t.strip() for t in zone_tags.split(",") if t.strip()]
 
-    filename = f"{uuid.uuid4().hex[:10]}{ext}"
-    dest = VIDEOS_DIR / filename
-    VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-    with dest.open("wb") as f:
-        shutil.copyfileobj(video.file, f)
+    if source_type == "rtsp":
+        source_path = _validate_rtsp_url(rtsp_url)
+    elif source_type == "file":
+        if video is None:
+            raise HTTPException(status_code=400, detail="Choose a video file or switch the source type to RTSP.")
+        ext = Path(video.filename or "").suffix.lower()
+        if ext not in ALLOWED_VIDEO_EXT:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported video format '{ext}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXT))}",
+            )
+        filename = f"{uuid.uuid4().hex[:10]}{ext}"
+        dest = VIDEOS_DIR / filename
+        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+        with dest.open("wb") as f:
+            shutil.copyfileobj(video.file, f)
+        source_path = filename
+    else:
+        raise HTTPException(status_code=400, detail="Source type must be file or rtsp.")
 
     camera = Camera(
         name=name,
         location=location,
         zone_tags=tags,
         description=description,
-        source_type="file",
-        source_path=filename,
+        source_type=source_type,
+        source_path=source_path,
     )
     db.add(camera)
     db.commit()
     db.refresh(camera)
 
-    registry.add(camera.id, camera.source_path)
+    registry.add(camera.id, camera.source_path, camera.source_type)
 
     return _camera_out(camera)
 
@@ -257,6 +277,8 @@ class CameraUpdate(BaseModel):
     location: Optional[str] = None
     zone_tags: Optional[list[str]] = None
     description: Optional[str] = None
+    source_type: Optional[str] = Field(default=None, pattern="^(file|rtsp)$")
+    source_path: Optional[str] = Field(default=None, max_length=2000)
 
 
 @app.put("/api/cameras/{cam_id}")
@@ -264,6 +286,16 @@ def update_camera(cam_id: str, payload: CameraUpdate, db: Session = Depends(get_
     camera = db.get(Camera, cam_id)
     if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found")
+
+    if payload.source_type is not None and payload.source_type != camera.source_type:
+        raise HTTPException(400, "Create a new source to change between uploaded video and RTSP.")
+    next_type = payload.source_type or camera.source_type
+    next_path = payload.source_path if payload.source_path is not None else camera.source_path
+    if next_type == "rtsp":
+        next_path = _validate_rtsp_url(next_path)
+    elif payload.source_type == "file" and payload.source_path is not None:
+        raise HTTPException(400, "Uploaded video files cannot be replaced through this form.")
+    source_changed = next_type != camera.source_type or next_path != camera.source_path
 
     if payload.name is not None:
         camera.name = payload.name
@@ -273,9 +305,15 @@ def update_camera(cam_id: str, payload: CameraUpdate, db: Session = Depends(get_
         camera.zone_tags = payload.zone_tags
     if payload.description is not None:
         camera.description = payload.description
+    if source_changed:
+        registry.remove(cam_id)
+        camera.source_type = next_type
+        camera.source_path = next_path
 
     db.commit()
     db.refresh(camera)
+    if source_changed:
+        registry.add(camera.id, camera.source_path, camera.source_type)
     return _camera_out(camera)
 
 

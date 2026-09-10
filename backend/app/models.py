@@ -27,7 +27,7 @@ class Camera(Base):
     zone_tags = Column(ARRAY(String), nullable=False, default=list)
     description = Column(Text, nullable=False, default="")
 
-    # "file" (looping local video, MVP) or "rtsp" (coming soon)
+    # "file" (looping local video) or "rtsp" (live network stream)
     source_type = Column(String, nullable=False, default="file")
     source_path = Column(String, nullable=False)  # filename under VIDEOS_DIR, or rtsp url
 

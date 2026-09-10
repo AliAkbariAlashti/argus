@@ -2,6 +2,7 @@ import threading
 import time
 import logging
 from collections import deque
+from urllib.parse import urlsplit, urlunsplit
 
 import cv2
 
@@ -11,13 +12,12 @@ log = logging.getLogger("qwenvl.camera")
 
 
 class CameraFeed:
-    """Loops a local video file and keeps the latest decoded frame in memory,
-    simulating a live CCTV feed. Real RTSP/webcam sources can later replace
-    the file path with a stream URL without changing any consumer code."""
+    """Decode a local file or RTSP stream into the common camera feed buffer."""
 
-    def __init__(self, cam_id: str, path: str):
+    def __init__(self, cam_id: str, path: str, source_type: str = "file"):
         self.id = cam_id
         self.path = path
+        self.source_type = source_type
 
         self._lock = threading.Lock()
         self._frame = None  # latest raw BGR frame
@@ -44,47 +44,82 @@ class CameraFeed:
         if self._thread:
             self._thread.join(timeout=2)
 
+    def _log_source(self):
+        if self.source_type != "rtsp":
+            return self.path
+        parsed = urlsplit(self.path)
+        host = parsed.hostname or "camera"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = host + (f":{parsed.port}" if parsed.port else "")
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+
+    def _mark_offline(self):
+        with self._lock:
+            self._frame_times.clear()
+
     def _run(self):
-        cap = cv2.VideoCapture(self.path)
-        if not cap.isOpened():
-            log.error("Camera %s: could not open video file %s", self.id, self.path)
-            self._running = False
-            return
-
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        fps = fps if fps > 1 else 25.0
-        delay = 1.0 / fps
-
-        failures = 0
         while self._running:
-            ok, frame = cap.read()
-            if not ok:
-                failures += 1
-                if failures >= 5:
-                    log.error("Camera %s: source stopped yielding frames", self.id)
-                    self._running = False
-                    break
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                time.sleep(0.1)
-                continue
+            cap = cv2.VideoCapture(self.path)
+            if not cap.isOpened():
+                self._mark_offline()
+                log.warning("Camera %s: could not open %s source %s", self.id, self.source_type, self._log_source())
+                cap.release()
+                if self.source_type == "rtsp":
+                    # Keep the feed object alive so a temporary network or
+                    # camera restart recovers without an API call.
+                    time.sleep(2)
+                    continue
+                self._running = False
+                return
+
+            if self.source_type == "rtsp":
+                # A small capture buffer keeps the UI close to real time
+                # instead of displaying frames that queued during downtime.
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            fps = fps if fps > 1 else 25.0
+            delay = 1.0 / fps
             failures = 0
 
-            ok, buf = cv2.imencode(
-                ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
-            )
-            now = time.monotonic()
-            with self._lock:
-                self._frame = frame
-                if ok:
-                    self._jpeg = buf.tobytes()
-                if now - self._last_history_at >= MOTION_BUFFER_SECONDS:
-                    self._history.append(frame)
-                    self._last_history_at = now
-                self._frame_times.append(now)
+            while self._running:
+                ok, frame = cap.read()
+                if not ok:
+                    failures += 1
+                    if self.source_type == "rtsp":
+                        if failures >= 5:
+                            self._mark_offline()
+                            log.warning("Camera %s: RTSP stream lost; reconnecting", self.id)
+                            break
+                        time.sleep(0.1)
+                        continue
+                    if failures >= 5:
+                        log.error("Camera %s: source stopped yielding frames", self.id)
+                        self._running = False
+                        break
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    time.sleep(0.1)
+                    continue
 
-            time.sleep(delay)
+                failures = 0
+                ok, buf = cv2.imencode(
+                    ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+                )
+                now = time.monotonic()
+                with self._lock:
+                    self._frame = frame
+                    if ok:
+                        self._jpeg = buf.tobytes()
+                    if now - self._last_history_at >= MOTION_BUFFER_SECONDS:
+                        self._history.append(frame)
+                        self._last_history_at = now
+                    self._frame_times.append(now)
 
-        cap.release()
+                time.sleep(delay)
+
+            cap.release()
+            if self.source_type == "rtsp" and self._running:
+                time.sleep(1)
 
     @property
     def running(self):
@@ -144,12 +179,12 @@ class CameraRegistry:
         self._feeds: dict[str, CameraFeed] = {}
         self._lock = threading.Lock()
 
-    def add(self, cam_id: str, source_path: str):
+    def add(self, cam_id: str, source_path: str, source_type: str = "file"):
         with self._lock:
             if cam_id in self._feeds:
                 return
-            path = str(VIDEOS_DIR / source_path)
-            feed = CameraFeed(cam_id, path)
+            path = source_path if source_type == "rtsp" else str(VIDEOS_DIR / source_path)
+            feed = CameraFeed(cam_id, path, source_type)
             feed.start()
             self._feeds[cam_id] = feed
 

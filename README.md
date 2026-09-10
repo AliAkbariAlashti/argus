@@ -5,7 +5,8 @@ activity feed, watch rules, source management, and hardware-aware AI setup.
 
 The included sources are **looping demo video files**, clearly labeled in the UI.
 Visual answers come from the configured model, never canned demo responses.
-This version does not include RTSP integration or historical video retrieval.
+Live RTSP sources are supported. This version does not record RTSP footage or
+include historical video retrieval.
 
 ## Start without a GPU
 
@@ -18,6 +19,13 @@ The CPU app can display sources, upload videos, manage rules, and show saved
 activity. No model weights or CUDA packages are downloaded by this profile.
 The database, uploaded media, and AI settings use separate persistent volumes.
 Use `ARGUS_PORT=8092` if the default port is occupied.
+
+### Connect a live RTSP camera
+
+Open **Cameras**, choose **Add source**, select **IP Camera / RTSP**, and enter
+the stream URL, for example `rtsp://192.168.1.50:8554/camera`. The Argus server
+must be able to reach that address on the local network. Temporary disconnects
+are retried automatically.
 
 The MVP is a single trusted workspace without authentication or tenant isolation.
 The Compose profile binds to localhost; use a local browser or SSH tunnel for a
@@ -132,7 +140,7 @@ ARGUS_URL=http://127.0.0.1:8090 npm run test:ui
 - Analysis uses sampled frames; model observations are fallible. No calibrated
   accuracy claim, guaranteed detection latency, or production capacity claim.
 - History contains conversations and event snapshots, not searchable recorded video.
-- File sources only. IP cameras, recording retention, robust tracking, incident
-  acknowledgement and notification delivery are subsequent milestones.
+- RTSP streams are viewed and analyzed live but are not recorded. Recording
+  retention, incident acknowledgement and notification delivery are subsequent milestones.
 - Configuration supports one active provider; automatic routing, cost quotas,
   heterogeneous device scheduling and production secrets management are future work.
