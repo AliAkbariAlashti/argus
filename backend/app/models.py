@@ -215,6 +215,60 @@ class VisualEmbedding(Base):
         return result
 
 
+class CameraLink(Base):
+    """Directed travel-time constraint between two camera views."""
+
+    __tablename__ = "camera_links"
+    __table_args__ = (UniqueConstraint("from_camera_id", "to_camera_id", name="uq_camera_link_direction"),)
+
+    id = Column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    from_camera_id = Column(String, nullable=False)
+    to_camera_id = Column(String, nullable=False)
+    min_travel_seconds = Column(Float, nullable=False, default=0)
+    max_travel_seconds = Column(Float, nullable=False)
+    description = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id, "from_camera_id": self.from_camera_id, "to_camera_id": self.to_camera_id,
+            "min_travel_seconds": self.min_travel_seconds, "max_travel_seconds": self.max_travel_seconds,
+            "description": self.description, "created_at": _utc_iso(self.created_at),
+        }
+
+
+class EntityAssociation(Base):
+    """Auditable cross-camera match proposal or operator decision."""
+
+    __tablename__ = "entity_associations"
+    __table_args__ = (
+        UniqueConstraint("source_observation_id", "target_observation_id", name="uq_entity_association_pair"),
+        Index("ix_entity_associations_status_created", "status", "created_at"),
+    )
+
+    id = Column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    source_observation_id = Column(String(32), nullable=False)
+    target_observation_id = Column(String(32), nullable=False)
+    source_track_id = Column(String, nullable=False)
+    target_track_id = Column(String, nullable=False)
+    similarity = Column(Float, nullable=False)
+    travel_seconds = Column(Float, nullable=False)
+    status = Column(String, nullable=False, default="suggested")
+    global_entity_id = Column(String(32), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id, "source_observation_id": self.source_observation_id,
+            "target_observation_id": self.target_observation_id, "source_track_id": self.source_track_id,
+            "target_track_id": self.target_track_id, "similarity": self.similarity,
+            "travel_seconds": self.travel_seconds, "status": self.status,
+            "global_entity_id": self.global_entity_id, "created_at": _utc_iso(self.created_at),
+            "decided_at": _utc_iso(self.decided_at),
+        }
+
+
 class AlertRule(Base):
     """Operator-defined watch condition. Two independent sources:
 

@@ -174,6 +174,23 @@ observation IDs, event IDs, camera names, and timestamps used as evidence.
 Detector labels are retrieval hints; the VLM is instructed to report uncertainty
 and never infer a shared identity across cameras.
 
+### Cross-camera entity matching
+
+Camera topology is configured as directed travel windows through
+`GET/POST/DELETE /api/camera-links`. For example, Lobby → Hallway may allow
+10–90 seconds while the reverse direction has a different route or no link.
+
+`POST /api/entity-matches/suggest/{observation_id}` compares the tracked source
+observation only with compatible embeddings from reachable cameras, within the
+configured travel window and with the same detected object class. The minimum
+similarity is controlled by `ARGUS_ENTITY_MATCH_MIN_SIMILARITY` (default `0.80`).
+Suggestions remain reviewable records and do not imply identity.
+
+Use `GET /api/entity-matches` to review suggestions and
+`POST /api/entity-matches/{id}/decision` with `confirmed` or `rejected`.
+Confirmation assigns one UUID `global_entity_id` to both complete tracks.
+Conflicting previously confirmed identities are rejected instead of merged.
+
 Other controls: `VIDEOS_DIR`, `QWENVL_MODEL_ID`, `CHAT_FRAMES_SINGLE_CAMERA`,
 `VLM_MIN_PIXELS`, `VLM_MAX_PIXELS`, `CHAT_HISTORY_TURNS`, `MONITOR_ENABLED`,
 `MONITOR_MIN_VLM_INTERVAL_SECONDS`, and `MONITOR_MOTION_THRESHOLD`.

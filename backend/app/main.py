@@ -41,7 +41,8 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AlertRule, Camera, ChatMessage, Event, Observation, CpuConfig
+from .models import AlertRule, Camera, CameraLink, ChatMessage, EntityAssociation, Event, Observation, CpuConfig
+from .entity_matching import decide_association, suggest_matches
 from .observation_query import answer_observation_question
 from .visual_search import find_by_text, find_similar, initialize_vector_backend, provider_status, vector_backend_status
 from .verification import select_candidates, verification_prompt, wants_verification
@@ -744,6 +745,88 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     scope: str = Field(default="auto", pattern="^(auto|camera|fleet|cpu)$")
     focused_camera_id: Optional[str] = None
+
+
+class CameraLinkRequest(BaseModel):
+    from_camera_id: str
+    to_camera_id: str
+    min_travel_seconds: float = Field(default=0, ge=0)
+    max_travel_seconds: float = Field(gt=0)
+    description: str = Field(default="", max_length=500)
+
+
+class AssociationDecision(BaseModel):
+    status: str = Field(pattern="^(confirmed|rejected)$")
+
+
+@app.get("/api/camera-links")
+def list_camera_links(db: Session = Depends(get_db)):
+    return [row.to_dict() for row in db.query(CameraLink).order_by(CameraLink.from_camera_id, CameraLink.to_camera_id).all()]
+
+
+@app.post("/api/camera-links")
+def create_camera_link(req: CameraLinkRequest, db: Session = Depends(get_db)):
+    if req.from_camera_id == req.to_camera_id:
+        raise HTTPException(400, "A camera link must connect two different cameras.")
+    if req.min_travel_seconds > req.max_travel_seconds:
+        raise HTTPException(400, "Minimum travel time cannot exceed maximum travel time.")
+    if db.get(Camera, req.from_camera_id) is None or db.get(Camera, req.to_camera_id) is None:
+        raise HTTPException(404, "One or both cameras do not exist.")
+    existing = db.query(CameraLink).filter(
+        CameraLink.from_camera_id == req.from_camera_id,
+        CameraLink.to_camera_id == req.to_camera_id,
+    ).first()
+    if existing:
+        existing.min_travel_seconds = req.min_travel_seconds
+        existing.max_travel_seconds = req.max_travel_seconds
+        existing.description = req.description
+        row = existing
+    else:
+        row = CameraLink(**req.model_dump())
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row.to_dict()
+
+
+@app.delete("/api/camera-links/{link_id}")
+def delete_camera_link(link_id: str, db: Session = Depends(get_db)):
+    row = db.get(CameraLink, link_id)
+    if row is None:
+        raise HTTPException(404, "Camera link not found.")
+    db.delete(row)
+    db.commit()
+    return {"deleted": link_id}
+
+
+@app.post("/api/entity-matches/suggest/{observation_id}")
+def suggest_entity_matches(observation_id: str, limit: int = 10, db: Session = Depends(get_db)):
+    result = suggest_matches(db, observation_id, limit)
+    if result is None:
+        raise HTTPException(404, "A tracked source observation is required.")
+    return result
+
+
+@app.get("/api/entity-matches")
+def list_entity_matches(status: Optional[str] = None, limit: int = 100, db: Session = Depends(get_db)):
+    query = db.query(EntityAssociation).order_by(EntityAssociation.created_at.desc())
+    if status:
+        if status not in ("suggested", "confirmed", "rejected"):
+            raise HTTPException(400, "Status must be suggested, confirmed, or rejected.")
+        query = query.filter(EntityAssociation.status == status)
+    return [row.to_dict() for row in query.limit(max(1, min(limit, 500))).all()]
+
+
+@app.post("/api/entity-matches/{association_id}/decision")
+def set_entity_match_decision(association_id: str, req: AssociationDecision, db: Session = Depends(get_db)):
+    association = db.get(EntityAssociation, association_id)
+    if association is None:
+        raise HTTPException(404, "Entity match not found.")
+    try:
+        return decide_association(db, association, req.status).to_dict()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from None
 
 
 @app.get("/api/chat/history")
