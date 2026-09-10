@@ -147,6 +147,14 @@ candidate set was truncated. Larger deployments can keep the same observation
 contract while replacing the provider with CLIP/SigLIP and search with a native
 vector index.
 
+Set `ARGUS_VECTOR_BACKEND=pgvector` to use database-native cosine ranking. At
+startup Argus tries to enable the PostgreSQL `vector` extension and add its
+accelerated column. If the database image, hosted service, or database role
+does not provide that extension, Argus reports the reason at
+`GET /api/system/visual-search` and continues with bounded JSON search. Use a
+pgvector-enabled PostgreSQL service and grant the application role permission
+to create the extension, or have an administrator create it beforehand.
+
 Other controls: `VIDEOS_DIR`, `QWENVL_MODEL_ID`, `CHAT_FRAMES_SINGLE_CAMERA`,
 `VLM_MIN_PIXELS`, `VLM_MAX_PIXELS`, `CHAT_HISTORY_TURNS`, `MONITOR_ENABLED`,
 `MONITOR_MIN_VLM_INTERVAL_SECONDS`, and `MONITOR_MOTION_THRESHOLD`.

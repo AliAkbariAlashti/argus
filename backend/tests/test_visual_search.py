@@ -4,7 +4,10 @@ from unittest.mock import Mock
 import numpy as np
 
 from app.models import Observation
-from app.visual_search import CpuAppearanceProvider, crop_normalized, rank_embeddings, record_visual_embedding
+from app.visual_search import (
+    CpuAppearanceProvider, crop_normalized, initialize_vector_backend,
+    rank_embeddings, record_visual_embedding, vector_backend_status,
+)
 
 
 def test_cpu_descriptor_is_deterministic_and_normalized():
@@ -46,3 +49,20 @@ def test_similarity_ranking_is_deterministic_and_skips_wrong_dimensions():
     ranked = rank_embeddings([1.0, 0.0], rows)
     assert [row.id for _, row in ranked] == ["same", "different"]
     assert ranked[0][0] == 1.0
+
+
+def test_pgvector_request_falls_back_on_non_postgres(monkeypatch):
+    monkeypatch.setenv("ARGUS_VECTOR_BACKEND", "pgvector")
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+    status = initialize_vector_backend(engine)
+    assert status["requested"] == "pgvector"
+    assert status["active"] == "json"
+    assert status["ready"] is False
+    assert "requires PostgreSQL" in status["error"]
+
+
+def test_json_backend_is_default(monkeypatch):
+    monkeypatch.delenv("ARGUS_VECTOR_BACKEND", raising=False)
+    status = initialize_vector_backend(SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+    assert status == {"requested": "json", "active": "json", "ready": True, "error": None}
+    assert vector_backend_status() == status

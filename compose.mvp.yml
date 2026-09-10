@@ -10,6 +10,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://argus:argus-local@db:5432/argus
       ARGUS_OLLAMA_RELAY_PORT: 11435
+      ARGUS_VECTOR_BACKEND: ${ARGUS_VECTOR_BACKEND:-json}
     volumes:
       - argus_settings:/app/backend/data
       - argus_videos:/app/videos

@@ -43,7 +43,7 @@ from .grounding import (
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, ChatMessage, Event, Observation, CpuConfig
 from .observation_query import answer_observation_question
-from .visual_search import find_similar
+from .visual_search import find_similar, initialize_vector_backend, vector_backend_status
 from .monitor import monitor
 from .runtime import vlm
 from . import yolo
@@ -98,6 +98,7 @@ def _add_event_confidence_column():
 
 def _seed_and_start_cameras():
     Base.metadata.create_all(bind=engine)
+    initialize_vector_backend(engine)
     _add_alert_rule_columns()
     _add_event_confidence_column()
     db = next(get_db())
@@ -453,6 +454,11 @@ def search_similar_observations(
     if result is None:
         raise HTTPException(404, "No visual index exists for this observation.")
     return result
+
+
+@app.get("/api/system/visual-search")
+def visual_search_status():
+    return vector_backend_status()
 
 
 @app.get("/api/events/ask")

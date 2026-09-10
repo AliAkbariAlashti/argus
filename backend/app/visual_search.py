@@ -5,14 +5,19 @@ objects with similar colour distribution. It is deliberately provider-labelled
 so a deployment can add CLIP/SigLIP without pretending this vector is semantic.
 """
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
 
 import cv2
 import numpy as np
+from sqlalchemy import text
 
 from .models import Observation, VisualEmbedding
+
+log = logging.getLogger("argus.visual_search")
+_vector_backend = {"requested": "json", "active": "json", "ready": True, "error": None}
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,33 @@ class CpuAppearanceProvider:
 default_provider = CpuAppearanceProvider()
 
 
+def initialize_vector_backend(engine):
+    """Enable pgvector when requested, otherwise retain portable JSON search."""
+    requested = os.environ.get("ARGUS_VECTOR_BACKEND", "json").strip().lower()
+    _vector_backend.update(requested=requested, active="json", ready=True, error=None)
+    if requested in ("", "json"):
+        return vector_backend_status()
+    if requested != "pgvector":
+        _vector_backend.update(ready=False, error=f"Unknown vector backend: {requested}")
+        return vector_backend_status()
+    if engine.dialect.name != "postgresql":
+        _vector_backend.update(ready=False, error="pgvector requires PostgreSQL; JSON fallback is active.")
+        return vector_backend_status()
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            connection.execute(text("ALTER TABLE visual_embeddings ADD COLUMN IF NOT EXISTS native_vector vector"))
+        _vector_backend.update(active="pgvector")
+    except Exception as exc:
+        _vector_backend.update(ready=False, error=f"pgvector unavailable; JSON fallback is active: {exc}")
+        log.warning("%s", _vector_backend["error"])
+    return vector_backend_status()
+
+
+def vector_backend_status():
+    return dict(_vector_backend)
+
+
 def crop_normalized(frame: np.ndarray, box) -> np.ndarray:
     if frame is None or not box or len(box) != 4:
         raise ValueError("A frame and normalized box are required.")
@@ -79,6 +111,12 @@ def record_visual_embedding(db, observation: Observation, frame: np.ndarray, pro
         content_hash=descriptor.content_hash,
     )
     db.add(row)
+    if _vector_backend["active"] == "pgvector":
+        db.flush()
+        db.execute(
+            text("UPDATE visual_embeddings SET native_vector = CAST(:vector AS vector) WHERE id = :id"),
+            {"id": row.id, "vector": "[" + ",".join(str(value) for value in descriptor.vector) + "]"},
+        )
     return row
 
 
@@ -104,6 +142,13 @@ def find_similar(db, observation_id, *, camera_id=None, object_type=None, since:
     reference = db.query(VisualEmbedding).filter(VisualEmbedding.observation_id == observation_id).order_by(VisualEmbedding.created_at.desc()).first()
     if reference is None:
         return None
+    if _vector_backend["active"] == "pgvector":
+        native = _find_similar_pgvector(
+            db, reference, camera_id=camera_id, object_type=object_type,
+            since=since, until=until, limit=limit,
+        )
+        if native is not None:
+            return native
     query = db.query(VisualEmbedding).filter(
         VisualEmbedding.provider == reference.provider,
         VisualEmbedding.model_version == reference.model_version,
@@ -126,4 +171,49 @@ def find_similar(db, observation_id, *, camera_id=None, object_type=None, since:
         "matches": [{**row.to_dict(), "similarity": round(score, 6)} for score, row in ranked],
         "candidate_count": min(len(candidates), maximum),
         "candidates_truncated": truncated,
+        "search_backend": "json",
+    }
+
+
+def _find_similar_pgvector(db, reference, *, camera_id=None, object_type=None, since=None, until=None, limit=20):
+    clauses = [
+        "candidate.id != reference.id",
+        "candidate.native_vector IS NOT NULL",
+        "reference.native_vector IS NOT NULL",
+        "candidate.provider = reference.provider",
+        "candidate.model_version = reference.model_version",
+        "candidate.dimensions = reference.dimensions",
+    ]
+    params = {"observation_id": reference.observation_id, "limit": max(1, min(limit, 100))}
+    for value, clause, key in (
+        (camera_id, "candidate.camera_id = :camera_id", "camera_id"),
+        (object_type.strip().lower() if object_type else None, "candidate.object_type = :object_type", "object_type"),
+        (since, "candidate.observed_at >= :since", "since"),
+        (until, "candidate.observed_at < :until", "until"),
+    ):
+        if value is not None:
+            clauses.append(clause)
+            params[key] = value
+    statement = text(f"""
+        SELECT candidate.id,
+               1 - (candidate.native_vector <=> reference.native_vector) AS similarity
+        FROM visual_embeddings AS candidate
+        JOIN visual_embeddings AS reference
+          ON reference.observation_id = :observation_id
+        WHERE {' AND '.join(clauses)}
+        ORDER BY candidate.native_vector <=> reference.native_vector, candidate.id
+        LIMIT :limit
+    """)
+    scored = db.execute(statement, params).all()
+    if not scored:
+        return None
+    scores = {row.id: float(row.similarity) for row in scored}
+    rows = db.query(VisualEmbedding).filter(VisualEmbedding.id.in_(scores)).all()
+    rows.sort(key=lambda row: (-scores[row.id], row.id))
+    return {
+        "reference": reference.to_dict(),
+        "matches": [{**row.to_dict(), "similarity": round(scores[row.id], 6)} for row in rows],
+        "candidate_count": len(rows),
+        "candidates_truncated": False,
+        "search_backend": "pgvector",
     }
