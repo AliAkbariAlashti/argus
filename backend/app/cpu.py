@@ -308,7 +308,12 @@ class CpuMonitor:
         if observation:
             observation_row = record_observation(db, camera_id=camera_id, event_id=event.id, **observation)
             if visual_frame is not None and observation_row.box:
-                record_visual_embedding(db, observation_row, visual_frame)
+                try:
+                    record_visual_embedding(db, observation_row, visual_frame)
+                except Exception as exc:
+                    # An optional embedding model must never stop detection,
+                    # tracking, or event persistence.
+                    log.warning("Visual embedding skipped: %s", exc)
         if keep_snapshot and run is not None:
             db.query(Event).filter(Event.id == run["event_id"]).update({"snapshot": None})
         if deduplicate:

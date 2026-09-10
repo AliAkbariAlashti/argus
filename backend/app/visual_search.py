@@ -7,6 +7,7 @@ so a deployment can add CLIP/SigLIP without pretending this vector is semantic.
 import hashlib
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -18,6 +19,9 @@ from .models import Observation, VisualEmbedding
 
 log = logging.getLogger("argus.visual_search")
 _vector_backend = {"requested": "json", "active": "json", "ready": True, "error": None}
+_provider_lock = threading.Lock()
+_provider = None
+_provider_state = {"requested": "opencv", "active": None, "ready": None, "error": None}
 
 
 @dataclass(frozen=True)
@@ -54,7 +58,77 @@ class CpuAppearanceProvider:
         )
 
 
-default_provider = CpuAppearanceProvider()
+class TransformersClipProvider:
+    """Optional shared image/text embedding space backed by Transformers."""
+
+    name = "transformers-clip"
+
+    def __init__(self, model_id=None):
+        from transformers import AutoModel, AutoProcessor
+
+        self.model_id = model_id or os.environ.get("ARGUS_SEMANTIC_MODEL", "openai/clip-vit-base-patch32")
+        self.version = self.model_id
+        self.processor = AutoProcessor.from_pretrained(self.model_id)
+        self.model = AutoModel.from_pretrained(self.model_id)
+        self.model.eval()
+
+    @staticmethod
+    def _descriptor(name, version, values, content):
+        vector = values.detach().cpu().numpy().reshape(-1).astype(np.float32)
+        norm = float(np.linalg.norm(vector))
+        if norm:
+            vector /= norm
+        return Descriptor(name, version, [round(float(value), 8) for value in vector], hashlib.sha256(content).hexdigest())
+
+    def describe(self, crop: np.ndarray) -> Descriptor:
+        from PIL import Image
+        import torch
+
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        inputs = self.processor(images=image, return_tensors="pt")
+        with torch.inference_mode():
+            values = self.model.get_image_features(**inputs)
+        return self._descriptor(self.name, self.version, values, crop.tobytes())
+
+    def describe_text(self, query: str) -> Descriptor:
+        import torch
+
+        inputs = self.processor(text=[query], return_tensors="pt", padding=True)
+        with torch.inference_mode():
+            values = self.model.get_text_features(**inputs)
+        return self._descriptor(self.name, self.version, values, query.encode())
+
+
+def get_provider():
+    global _provider
+    requested = os.environ.get("ARGUS_VISUAL_EMBEDDING_PROVIDER", "opencv").strip().lower()
+    with _provider_lock:
+        if _provider is not None and _provider_state["requested"] == requested:
+            return _provider
+        _provider_state.update(requested=requested, active=None, ready=False, error=None)
+        try:
+            if requested == "opencv":
+                _provider = CpuAppearanceProvider()
+            elif requested in ("clip", "transformers-clip"):
+                _provider = TransformersClipProvider()
+            else:
+                raise ValueError(f"Unknown visual embedding provider: {requested}")
+            _provider_state.update(active=_provider.name, ready=True)
+            return _provider
+        except Exception as exc:
+            _provider = None
+            _provider_state["error"] = str(exc)
+            raise
+
+
+def provider_status(load=False):
+    if load and _provider_state["ready"] is None:
+        try:
+            get_provider()
+        except Exception:
+            pass
+    return dict(_provider_state)
 
 
 def initialize_vector_backend(engine):
@@ -96,7 +170,8 @@ def crop_normalized(frame: np.ndarray, box) -> np.ndarray:
     return frame[top:bottom, left:right]
 
 
-def record_visual_embedding(db, observation: Observation, frame: np.ndarray, provider=default_provider):
+def record_visual_embedding(db, observation: Observation, frame: np.ndarray, provider=None):
+    provider = provider or get_provider()
     descriptor = provider.describe(crop_normalized(frame, observation.box))
     row = VisualEmbedding(
         observation_id=observation.id,
@@ -136,6 +211,39 @@ def rank_embeddings(reference_vector, rows, limit=20):
             ranked.append((score, row))
     ranked.sort(key=lambda item: (-item[0], item[1].id))
     return ranked[:max(1, min(limit, 100))]
+
+
+def find_by_text(db, query_text, *, camera_id=None, object_type=None, since=None, until=None, limit=20):
+    provider = get_provider()
+    if not hasattr(provider, "describe_text"):
+        raise ValueError("Text search requires the optional CLIP embedding provider.")
+    descriptor = provider.describe_text(query_text)
+    query = db.query(VisualEmbedding).filter(
+        VisualEmbedding.provider == descriptor.provider,
+        VisualEmbedding.model_version == descriptor.model_version,
+        VisualEmbedding.dimensions == len(descriptor.vector),
+    )
+    if camera_id:
+        query = query.filter(VisualEmbedding.camera_id == camera_id)
+    if object_type:
+        query = query.filter(VisualEmbedding.object_type == object_type.strip().lower())
+    if since:
+        query = query.filter(VisualEmbedding.observed_at >= since)
+    if until:
+        query = query.filter(VisualEmbedding.observed_at < until)
+    maximum = max(1, int(os.environ.get("ARGUS_VISUAL_SEARCH_MAX_CANDIDATES", "5000")))
+    candidates = query.order_by(VisualEmbedding.observed_at.desc()).limit(maximum + 1).all()
+    truncated = len(candidates) > maximum
+    ranked = rank_embeddings(descriptor.vector, candidates[:maximum], limit)
+    return {
+        "query": query_text,
+        "provider": descriptor.provider,
+        "model_version": descriptor.model_version,
+        "matches": [{**row.to_dict(), "similarity": round(score, 6)} for score, row in ranked],
+        "candidate_count": min(len(candidates), maximum),
+        "candidates_truncated": truncated,
+        "search_backend": "json",
+    }
 
 
 def find_similar(db, observation_id, *, camera_id=None, object_type=None, since: datetime | None = None, until: datetime | None = None, limit=20):

@@ -1,0 +1,3 @@
+# Optional semantic image/text search. Install in addition to requirements-core.txt.
+torch>=2.2
+transformers>=4.45,<6

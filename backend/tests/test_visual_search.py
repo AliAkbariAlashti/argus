@@ -5,7 +5,7 @@ import numpy as np
 
 from app.models import Observation
 from app.visual_search import (
-    CpuAppearanceProvider, crop_normalized, initialize_vector_backend,
+    CpuAppearanceProvider, Descriptor, crop_normalized, find_by_text, initialize_vector_backend,
     rank_embeddings, record_visual_embedding, vector_backend_status,
 )
 
@@ -66,3 +66,26 @@ def test_json_backend_is_default(monkeypatch):
     status = initialize_vector_backend(SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
     assert status == {"requested": "json", "active": "json", "ready": True, "error": None}
     assert vector_backend_status() == status
+
+
+def test_text_search_uses_shared_semantic_space(monkeypatch):
+    from app import visual_search
+
+    provider = SimpleNamespace(describe_text=lambda query: Descriptor("clip", "model-v1", [1.0, 0.0], "hash"))
+    rows = [
+        SimpleNamespace(id="best", vector=[1.0, 0.0], to_dict=lambda: {"id": "best"}),
+        SimpleNamespace(id="weak", vector=[0.0, 1.0], to_dict=lambda: {"id": "weak"}),
+    ]
+    query = Mock()
+    query.filter.return_value = query
+    query.order_by.return_value = query
+    query.limit.return_value = query
+    query.all.return_value = rows
+    db = Mock()
+    db.query.return_value = query
+    monkeypatch.setattr(visual_search, "get_provider", lambda: provider)
+
+    result = find_by_text(db, "red vehicle", limit=2)
+    assert result["provider"] == "clip"
+    assert [match["id"] for match in result["matches"]] == ["best", "weak"]
+    assert result["matches"][0]["similarity"] == 1.0

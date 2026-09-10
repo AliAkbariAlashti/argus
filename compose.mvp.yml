@@ -11,6 +11,8 @@ services:
       DATABASE_URL: postgresql+psycopg://argus:argus-local@db:5432/argus
       ARGUS_OLLAMA_RELAY_PORT: 11435
       ARGUS_VECTOR_BACKEND: ${ARGUS_VECTOR_BACKEND:-json}
+      ARGUS_VISUAL_EMBEDDING_PROVIDER: ${ARGUS_VISUAL_EMBEDDING_PROVIDER:-opencv}
+      ARGUS_SEMANTIC_MODEL: ${ARGUS_SEMANTIC_MODEL:-openai/clip-vit-base-patch32}
     volumes:
       - argus_settings:/app/backend/data
       - argus_videos:/app/videos

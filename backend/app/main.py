@@ -43,7 +43,7 @@ from .grounding import (
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, ChatMessage, Event, Observation, CpuConfig
 from .observation_query import answer_observation_question
-from .visual_search import find_similar, initialize_vector_backend, vector_backend_status
+from .visual_search import find_by_text, find_similar, initialize_vector_backend, provider_status, vector_backend_status
 from .monitor import monitor
 from .runtime import vlm
 from . import yolo
@@ -458,7 +458,32 @@ def search_similar_observations(
 
 @app.get("/api/system/visual-search")
 def visual_search_status():
-    return vector_backend_status()
+    return {"storage": vector_backend_status(), "embedding": provider_status(load=True)}
+
+
+@app.get("/api/visual-search")
+def semantic_visual_search(
+    q: str,
+    camera_id: Optional[str] = None,
+    object_type: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    if not q.strip():
+        raise HTTPException(400, "A semantic search query is required.")
+    try:
+        return find_by_text(
+            db, q.strip(), camera_id=camera_id, object_type=object_type,
+            since=_observation_time(since, "since") if since else None,
+            until=_observation_time(until, "until") if until else None,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(503, f"Semantic embedding provider unavailable: {exc}") from None
 
 
 @app.get("/api/events/ask")

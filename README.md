@@ -155,6 +155,14 @@ does not provide that extension, Argus reports the reason at
 pgvector-enabled PostgreSQL service and grant the application role permission
 to create the extension, or have an administrator create it beforehand.
 
+For semantic image/text search, install `backend/requirements-embeddings.txt`
+and set `ARGUS_VISUAL_EMBEDDING_PROVIDER=clip`. The model is selected with
+`ARGUS_SEMANTIC_MODEL` and defaults to `openai/clip-vit-base-patch32`; it may be
+a downloaded model ID or a mounted local directory. New object crops then use
+the same image/text vector space, and `GET /api/visual-search?q=red+vehicle`
+searches them. Existing OpenCV vectors remain valid and searchable by reference;
+changing providers does not reinterpret or delete earlier vectors.
+
 Other controls: `VIDEOS_DIR`, `QWENVL_MODEL_ID`, `CHAT_FRAMES_SINGLE_CAMERA`,
 `VLM_MIN_PIXELS`, `VLM_MAX_PIXELS`, `CHAT_HISTORY_TURNS`, `MONITOR_ENABLED`,
 `MONITOR_MIN_VLM_INTERVAL_SECONDS`, and `MONITOR_MOTION_THRESHOLD`.
