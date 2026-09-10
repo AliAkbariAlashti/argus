@@ -122,7 +122,38 @@ def test_object_only_detection_is_committed(monkeypatch):
 
     event_adds = [c.args[0] for c in db.add.call_args_list if isinstance(c.args[0], module.Event)]
     assert event_adds, "expected an Event to be added"
+    from app.models import Observation
+    observation_adds = [c.args[0] for c in db.add.call_args_list if isinstance(c.args[0], Observation)]
+    assert len(observation_adds) == 1
+    assert observation_adds[0].kind == "object_detection"
+    assert observation_adds[0].object_type == "car"
+    assert observation_adds[0].box == [0.1, 0.1, 0.2, 0.2]
     assert db.commit.called, "Event was added but never committed — it would be silently rolled back"
+
+
+def test_tracking_crossing_and_dwell_write_structured_observations(monkeypatch):
+    from app import cpu as module
+    from app.models import Observation
+
+    monkeypatch.setattr(module.yolo, "detect", lambda *a, **k: [("person", 0.91, [0.2, 0.2, 0.2, 0.3])])
+    monitor = CpuMonitor()
+
+    def tracked(camera_id, detections, now, line=None, dwell_seconds=None):
+        detections[0].update({"track_id": 7, "track_uid": "a" * 32, "dwell_seconds": 12.0})
+        crossing = {"track_id": 7, "track_uid": "a" * 32, "class": "person", "direction": "A_to_B"}
+        dwell = {"track_id": 7, "track_uid": "a" * 32, "class": "person", "dwell_seconds": 12.0}
+        return detections, {"person": 1}, [crossing], [dwell]
+
+    monkeypatch.setattr(monitor._tracker, "update", tracked)
+    settings = CpuSettings(object_alerts=True, tracking_enabled=True, line_crossing_alerts=True,
+                           dwell_alerts=True, dwell_seconds=10, motion_alerts=False)
+    db = _mock_db()
+    monitor.process(db, SimpleNamespace(id="cam1"), np.zeros((180, 320, 3), dtype=np.uint8), settings)
+    observations = [call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], Observation)]
+    assert {row.kind for row in observations} == {"object_detection", "line_crossing", "dwell"}
+    assert all(row.track_id == "a" * 32 for row in observations)
+    crossing = next(row for row in observations if row.kind == "line_crossing")
+    assert crossing.direction == "A_to_B"
 
 
 def test_process_logs_an_event_every_detector_tick_no_gating(monkeypatch):

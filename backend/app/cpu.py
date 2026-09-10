@@ -15,6 +15,7 @@ from .camera import registry
 from .db import SessionLocal
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, CpuConfig, Event
+from .observations import record_observation
 from .tracking import ObjectTracker
 
 log = logging.getLogger("argus.cpu")
@@ -281,7 +282,7 @@ class CpuMonitor:
         )
         return rule.severity if rule else "info"
 
-    def _log_detection_row(self, db, camera_id, category, severity, summary, drawn, confidence=None, deduplicate=True):
+    def _log_detection_row(self, db, camera_id, category, severity, summary, drawn, confidence=None, deduplicate=True, observation=None):
         """Every detection sample becomes a row here — no gating, no cooldown.
         Rules (and their severity) are a property of the row, not a gate on
         whether it exists. Within a back-to-back run of the same
@@ -303,6 +304,8 @@ class CpuMonitor:
                       snapshot=snapshot, confidence=round(confidence * 100) if confidence is not None else None)
         db.add(event)
         db.flush()  # assign event.id without a full commit
+        if observation:
+            record_observation(db, camera_id=camera_id, event_id=event.id, **observation)
         if keep_snapshot and run is not None:
             db.query(Event).filter(Event.id == run["event_id"]).update({"snapshot": None})
         if deduplicate:
@@ -366,7 +369,8 @@ class CpuMonitor:
                 last_event[flag] = now
         drawn = annotate(frame, result, settings)
         ok, jpeg = cv2.imencode(".jpg", drawn, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        result.update({"sampled_at": time.time(), "checked_at": datetime.now(timezone.utc).isoformat(), "analysis_ms": round((time.monotonic() - started) * 1000, 1), "area": settings.area.model_dump()})
+        observed_at = datetime.now(timezone.utc)
+        result.update({"sampled_at": time.time(), "checked_at": observed_at.isoformat(), "analysis_ms": round((time.monotonic() - started) * 1000, 1), "area": settings.area.model_dump()})
         # A saved configuration invalidates any in-flight result from the old area.
         with self._lock:
             if generation != self._generation.get(camera.id, 0):
@@ -390,18 +394,51 @@ class CpuMonitor:
                     for obj in result.get("objects", []):
                         category = f"CPU · {obj['class'].title()} detected"
                         severity = self._resolve_object_severity(db, camera.id, obj["class"])
-                        self._log_detection_row(db, camera.id, category, severity, summary, drawn, confidence=obj["confidence"])
+                        attributes = {"detector": "yolo"}
+                        if obj.get("track_id") is not None:
+                            attributes["local_track_id"] = obj["track_id"]
+                        self._log_detection_row(
+                            db, camera.id, category, severity, summary, drawn, confidence=obj["confidence"],
+                            observation={
+                                "kind": "object_detection", "source": "cpu", "observed_at": observed_at,
+                                "object_type": obj["class"], "track_id": obj.get("track_uid"),
+                                "confidence": obj["confidence"], "box": obj["box"], "action": "observed",
+                                "dwell_seconds": obj.get("dwell_seconds"), "attributes": attributes,
+                            },
+                        )
                         seen_categories.add(category)
                         wrote_anything = True
+                objects_by_track = {obj.get("track_id"): obj for obj in result.get("objects", []) if obj.get("track_id") is not None}
                 for crossing in result.get("line_crossings", []):
                     category = f"CPU · {crossing['class'].title()} crossed {crossing['direction']}"
                     severity = self._resolve_object_severity(db, camera.id, crossing["class"])
-                    self._log_detection_row(db, camera.id, category, severity, summary, drawn, deduplicate=False)
+                    obj = objects_by_track.get(crossing["track_id"], {})
+                    self._log_detection_row(
+                        db, camera.id, category, severity, summary, drawn, deduplicate=False,
+                        observation={
+                            "kind": "line_crossing", "source": "cpu", "observed_at": observed_at,
+                            "object_type": crossing["class"], "track_id": crossing.get("track_uid"),
+                            "confidence": obj.get("confidence"), "box": obj.get("box"),
+                            "action": "line_crossing", "direction": crossing["direction"],
+                            "dwell_seconds": obj.get("dwell_seconds"),
+                            "attributes": {"local_track_id": crossing["track_id"], "detector": "yolo"},
+                        },
+                    )
                     wrote_anything = True
                 for dwell in dwell_events:
                     category = f"CPU · {dwell['class'].title()} stayed {dwell['dwell_seconds']:.0f}s"
                     severity = self._resolve_object_severity(db, camera.id, dwell["class"])
-                    self._log_detection_row(db, camera.id, category, severity, summary, drawn, deduplicate=False)
+                    obj = objects_by_track.get(dwell["track_id"], {})
+                    self._log_detection_row(
+                        db, camera.id, category, severity, summary, drawn, deduplicate=False,
+                        observation={
+                            "kind": "dwell", "source": "cpu", "observed_at": observed_at,
+                            "object_type": dwell["class"], "track_id": dwell.get("track_uid"),
+                            "confidence": obj.get("confidence"), "box": obj.get("box"),
+                            "action": "dwell_threshold", "dwell_seconds": dwell["dwell_seconds"],
+                            "attributes": {"local_track_id": dwell["track_id"], "detector": "yolo"},
+                        },
+                    )
                     wrote_anything = True
                 # A category not detected on this detector tick has ended its
                 # run — clear it so the next occurrence starts fresh (gets a

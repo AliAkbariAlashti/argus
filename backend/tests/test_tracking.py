@@ -33,7 +33,7 @@ def test_tracker_reports_line_crossing_direction():
     )
 
     assert tracked[0]["track_id"] == 1
-    assert crossings == [{"track_id": 1, "class": "car", "direction": "A_to_B"}]
+    assert crossings[0] == {"track_id": 1, "track_uid": tracked[0]["track_uid"], "class": "car", "direction": "A_to_B"}
     assert tracker.counts("cam") == {"A_to_B": 1, "B_to_A": 0, "total": 1}
 
 
@@ -42,7 +42,10 @@ def test_tracker_emits_one_dwell_event_and_expires_after_missed_ticks():
     obj = detection("person", [0.2, 0.2, 0.1, 0.2])
     tracker.update("cam", [obj], 100.0, dwell_seconds=10)
     _, _, _, dwell = tracker.update("cam", [detection("person", obj["box"])], 111.0, dwell_seconds=10)
-    assert dwell == [{"track_id": 1, "class": "person", "dwell_seconds": 11.0}]
+    assert dwell[0]["track_id"] == 1
+    assert dwell[0]["class"] == "person"
+    assert dwell[0]["dwell_seconds"] == 11.0
+    assert len(dwell[0]["track_uid"]) == 32
 
     tracker.update("cam", [], 114.0)
     tracked, counts, _, _ = tracker.update("cam", [], 117.0)

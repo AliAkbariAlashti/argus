@@ -126,6 +126,12 @@
         tracked object moves from side A to side B or back. This is short-term motion tracking, not identity recognition.</p>
         <p class="note">Tracking is based on sampled detections and can lose an ID when objects overlap, disappear, or
         move a large distance between samples. Use a longer dwell threshold for vehicles or stationary objects.</p>
+        <h3>Structured observations</h3>
+        <p>Object detections, tracking samples, line crossings, and dwell thresholds also enter a structured observation
+        index. Each record uses UTC time, normalized boxes, a globally unique track instance ID, and an optional link to
+        its Activity event. This index is intended for exact cross-camera queries before any larger AI model is called.</p>
+        <p class="note">For multi-node deployments, set <code>ARGUS_NODE_ID</code> to a stable name on each worker. The
+        API endpoint <code>/api/observations</code> can filter by camera, object, action, track, producer, and time range.</p>
         <h3>Alert rules without a vision model</h3>
         <p>On the <strong>Rules</strong> page, choose <em>CPU object detection</em> as the rule source and pick a
         class from the list (person, car, backpack, etc.) — the rule fires whenever object detection is enabled on

@@ -40,7 +40,7 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AlertRule, Camera, ChatMessage, Event, CpuConfig
+from .models import AlertRule, Camera, ChatMessage, Event, Observation, CpuConfig
 from .monitor import monitor
 from .runtime import vlm
 from . import yolo
@@ -365,6 +365,57 @@ def list_events(
         query = query.filter(Event.created_at >= since_dt.replace(tzinfo=None))
     rows = query.limit(min(limit, 500)).all()
     return [r.to_dict() for r in rows]
+
+
+def _observation_time(value: str, field: str):
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, f"{field} must be an ISO-8601 timestamp.") from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+@app.get("/api/observations")
+def list_observations(
+    camera_id: Optional[str] = None,
+    object_type: Optional[str] = None,
+    kind: Optional[str] = None,
+    action: Optional[str] = None,
+    track_id: Optional[str] = None,
+    producer_id: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """Indexed structured facts for deterministic and chatbot tool queries."""
+    query = db.query(Observation).order_by(Observation.observed_at.desc(), Observation.id.desc())
+    if camera_id:
+        query = query.filter(Observation.camera_id == camera_id)
+    if object_type:
+        query = query.filter(Observation.object_type == object_type.strip().lower())
+    if kind:
+        query = query.filter(Observation.kind == kind)
+    if action:
+        query = query.filter(Observation.action == action)
+    if track_id:
+        query = query.filter(Observation.track_id == track_id)
+    if producer_id:
+        query = query.filter(Observation.producer_id == producer_id)
+    if since:
+        query = query.filter(Observation.observed_at >= _observation_time(since, "since"))
+    if until:
+        query = query.filter(Observation.observed_at < _observation_time(until, "until"))
+    rows = query.limit(max(1, min(limit, 500))).all()
+    return [row.to_dict() for row in rows]
+
+
+@app.get("/api/observations/{observation_id}")
+def get_observation(observation_id: str, db: Session = Depends(get_db)):
+    row = db.get(Observation, observation_id)
+    if row is None:
+        raise HTTPException(404, "Observation not found")
+    return row.to_dict()
 
 
 @app.get("/api/events/ask")

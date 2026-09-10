@@ -7,6 +7,7 @@ detections for a short gap so the UI can show dwell time and line crossings.
 from collections import defaultdict
 from datetime import datetime, timezone
 from math import hypot
+import uuid
 
 
 def _center(box):
@@ -61,6 +62,7 @@ class ObjectTracker:
         side = _side_sign(_side(_center(box), line)) if line else 0
         self._tracks[camera_id][track_id] = {
             "track_id": track_id,
+            "track_uid": uuid.uuid4().hex,
             "class": detection["class"],
             "box": box,
             "confidence": detection.get("confidence"),
@@ -77,6 +79,7 @@ class ObjectTracker:
         return [
             {
                 "track_id": track["track_id"],
+                "track_uid": track["track_uid"],
                 "class": track["class"],
                 "box": track["box"],
                 "confidence": track["confidence"],
@@ -131,6 +134,7 @@ class ObjectTracker:
                 self._crossings[camera_id]["total"] += 1
                 crossings.append({
                     "track_id": track_id,
+                    "track_uid": track["track_uid"],
                     "class": detection["class"],
                     "direction": direction,
                 })
@@ -145,11 +149,13 @@ class ObjectTracker:
                 "missed": 0,
             })
             detection["track_id"] = track_id
+            detection["track_uid"] = track["track_uid"]
             detection["dwell_seconds"] = round(max(0, now - track["first_seen"]), 1)
             if dwell_seconds is not None and detection["dwell_seconds"] >= dwell_seconds and not track["dwell_alerted"]:
                 track["dwell_alerted"] = True
                 dwell_events.append({
                     "track_id": track_id,
+                    "track_uid": track["track_uid"],
                     "class": detection["class"],
                     "dwell_seconds": detection["dwell_seconds"],
                 })
