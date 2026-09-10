@@ -36,11 +36,13 @@ from .grounding import (
     build_fleet_prompt,
     build_grounded_prompt,
     extract_primary_cameras,
+    is_metadata_question,
     metadata_answer,
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, ChatMessage, Event, Observation, CpuConfig
+from .observation_query import answer_observation_question
 from .monitor import monitor
 from .runtime import vlm
 from . import yolo
@@ -410,6 +412,15 @@ def list_observations(
     return [row.to_dict() for row in rows]
 
 
+@app.get("/api/observations/ask")
+def ask_observations(question: str, camera_id: Optional[str] = None, db: Session = Depends(get_db)):
+    cameras = db.query(Camera).order_by(Camera.created_at).all()
+    result = answer_observation_question(db, question.strip(), cameras, forced_camera_id=camera_id)
+    if result is None:
+        raise HTTPException(400, "Ask a historical detection, tracking, crossing, or dwell question.")
+    return {"question": question, **result}
+
+
 @app.get("/api/observations/{observation_id}")
 def get_observation(observation_id: str, db: Session = Depends(get_db)):
     row = db.get(Observation, observation_id)
@@ -733,6 +744,29 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
         _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
         return {"question": req.question, "answer": answer, "scope": "cpu", "cameras_used": used, "snapshot": snapshot}
 
+    forced_camera_id = None
+    if req.scope == "camera":
+        focused_camera = next((camera for camera in all_cameras if camera.id == req.focused_camera_id), None)
+        if focused_camera is None and not is_metadata_question(req.question):
+            raise HTTPException(status_code=400, detail="Select a camera first.")
+        if focused_camera is not None:
+            forced_camera_id = focused_camera.id
+    observation_answer = answer_observation_question(db, req.question, all_cameras, forced_camera_id)
+    if observation_answer is not None:
+        _save_turn(db, "user", req.question)
+        _save_turn(
+            db, "assistant", observation_answer["answer"],
+            cameras_used=observation_answer["cameras_used"], snapshot=observation_answer["snapshot"],
+        )
+        return {
+            "question": req.question,
+            "answer": observation_answer["answer"],
+            "cameras_used": observation_answer["cameras_used"],
+            "snapshot": observation_answer["snapshot"],
+            "scope": "observations",
+            "query_plan": observation_answer["plan"],
+        }
+
     history = _recent_history(db)
 
     scope, camera = route_question(req.question, all_cameras, req.focused_camera_id)
@@ -888,7 +922,7 @@ async def stream_chat(req: ChatRequest):
 
     async def events():
         try:
-            yield 'event: status\ndata: {"text":"Reading camera frames and waiting for the analyst…"}\n\n'
+            yield 'event: status\ndata: {"text":"Planning the query and gathering evidence…"}\n\n'
             while True:
                 try:
                     kind, payload = await asyncio.wait_for(messages.get(), timeout=10)

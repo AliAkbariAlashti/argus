@@ -132,6 +132,9 @@
         its Activity event. This index is intended for exact cross-camera queries before any larger AI model is called.</p>
         <p class="note">For multi-node deployments, set <code>ARGUS_NODE_ID</code> to a stable name on each worker. The
         API endpoint <code>/api/observations</code> can filter by camera, object, action, track, producer, and time range.</p>
+        <p>Live analyst checks this index before requesting live visual inference. Historical questions about counts,
+        last sightings, cameras, crossings, and dwell time therefore work without a connected VLM and return exact
+        database results. Questions containing “now” or “currently” continue to inspect live camera frames.</p>
         <h3>Alert rules without a vision model</h3>
         <p>On the <strong>Rules</strong> page, choose <em>CPU object detection</em> as the rule source and pick a
         class from the list (person, car, backpack, etc.) — the rule fires whenever object detection is enabled on
