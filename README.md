@@ -130,6 +130,23 @@ vision-model call. Exact counts use unique track instances, camera/time filters
 stay deterministic, and matching Activity evidence is returned when available.
 Questions containing current-time language such as "right now" remain on the
 live-frame path.
+
+### Portable visual search
+
+CPU object detections also create a versioned 512-dimensional appearance
+descriptor for each object crop. The built-in `opencv-hsv` provider is a
+lightweight colour and appearance matcher; it is not an identity or semantic
+re-identification model. Vectors use ordinary JSON-compatible database columns,
+so PostgreSQL vector extensions are optional.
+
+`GET /api/visual-search/{observation_id}` finds similar indexed crops. Optional
+`camera_id`, `object_type`, `since`, `until`, and `limit` filters narrow the
+search. The portable backend evaluates at most
+`ARGUS_VISUAL_SEARCH_MAX_CANDIDATES` rows (default `5000`) and reports when the
+candidate set was truncated. Larger deployments can keep the same observation
+contract while replacing the provider with CLIP/SigLIP and search with a native
+vector index.
+
 Other controls: `VIDEOS_DIR`, `QWENVL_MODEL_ID`, `CHAT_FRAMES_SINGLE_CAMERA`,
 `VLM_MIN_PIXELS`, `VLM_MAX_PIXELS`, `CHAT_HISTORY_TURNS`, `MONITOR_ENABLED`,
 `MONITOR_MIN_VLM_INTERVAL_SECONDS`, and `MONITOR_MOTION_THRESHOLD`.

@@ -1,5 +1,6 @@
 """Portable structured observation writer shared by perception pipelines."""
 import os
+import uuid
 from datetime import datetime, timezone
 
 from .models import Observation
@@ -47,6 +48,7 @@ def record_observation(
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
     row = Observation(
+        id=uuid.uuid4().hex,
         camera_id=camera_id,
         observed_at=observed_at,
         producer_id=os.environ.get("ARGUS_NODE_ID", "local"),

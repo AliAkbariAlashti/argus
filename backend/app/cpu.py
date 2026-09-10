@@ -16,6 +16,7 @@ from .db import SessionLocal
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, CpuConfig, Event
 from .observations import record_observation
+from .visual_search import record_visual_embedding
 from .tracking import ObjectTracker
 
 log = logging.getLogger("argus.cpu")
@@ -282,7 +283,7 @@ class CpuMonitor:
         )
         return rule.severity if rule else "info"
 
-    def _log_detection_row(self, db, camera_id, category, severity, summary, drawn, confidence=None, deduplicate=True, observation=None):
+    def _log_detection_row(self, db, camera_id, category, severity, summary, drawn, confidence=None, deduplicate=True, observation=None, visual_frame=None):
         """Every detection sample becomes a row here — no gating, no cooldown.
         Rules (and their severity) are a property of the row, not a gate on
         whether it exists. Within a back-to-back run of the same
@@ -305,7 +306,9 @@ class CpuMonitor:
         db.add(event)
         db.flush()  # assign event.id without a full commit
         if observation:
-            record_observation(db, camera_id=camera_id, event_id=event.id, **observation)
+            observation_row = record_observation(db, camera_id=camera_id, event_id=event.id, **observation)
+            if visual_frame is not None and observation_row.box:
+                record_visual_embedding(db, observation_row, visual_frame)
         if keep_snapshot and run is not None:
             db.query(Event).filter(Event.id == run["event_id"]).update({"snapshot": None})
         if deduplicate:
@@ -405,6 +408,7 @@ class CpuMonitor:
                                 "confidence": obj["confidence"], "box": obj["box"], "action": "observed",
                                 "dwell_seconds": obj.get("dwell_seconds"), "attributes": attributes,
                             },
+                            visual_frame=frame,
                         )
                         seen_categories.add(category)
                         wrote_anything = True

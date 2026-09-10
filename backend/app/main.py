@@ -43,6 +43,7 @@ from .grounding import (
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, ChatMessage, Event, Observation, CpuConfig
 from .observation_query import answer_observation_question
+from .visual_search import find_similar
 from .monitor import monitor
 from .runtime import vlm
 from . import yolo
@@ -427,6 +428,31 @@ def get_observation(observation_id: str, db: Session = Depends(get_db)):
     if row is None:
         raise HTTPException(404, "Observation not found")
     return row.to_dict()
+
+
+@app.get("/api/visual-search/{observation_id}")
+def search_similar_observations(
+    observation_id: str,
+    camera_id: Optional[str] = None,
+    object_type: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    """Find observations with a similar indexed object crop."""
+    result = find_similar(
+        db,
+        observation_id,
+        camera_id=camera_id,
+        object_type=object_type,
+        since=_observation_time(since, "since") if since else None,
+        until=_observation_time(until, "until") if until else None,
+        limit=limit,
+    )
+    if result is None:
+        raise HTTPException(404, "No visual index exists for this observation.")
+    return result
 
 
 @app.get("/api/events/ask")

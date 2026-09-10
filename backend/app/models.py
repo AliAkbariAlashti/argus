@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Text, DateTime, ARRAY, Integer, Boolean, JSON, Float, Index
+from sqlalchemy import Column, String, Text, DateTime, ARRAY, Integer, Boolean, JSON, Float, Index, UniqueConstraint
 
 from .db import Base
 
@@ -166,6 +166,53 @@ class Observation(Base):
             "event_id": self.event_id,
             "attributes": self.attributes or {},
         }
+
+
+class VisualEmbedding(Base):
+    """Portable visual vector attached to a structured observation.
+
+    JSON storage works with the project's supported databases. Deployments can
+    move similarity search to a native vector index later without changing the
+    producer contract or regenerating observation IDs.
+    """
+
+    __tablename__ = "visual_embeddings"
+    __table_args__ = (
+        UniqueConstraint("observation_id", "provider", "model_version", name="uq_visual_embedding_version"),
+        Index("ix_visual_embeddings_camera_time", "camera_id", "observed_at"),
+        Index("ix_visual_embeddings_object_time", "object_type", "observed_at"),
+    )
+
+    id = Column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    observation_id = Column(String(32), nullable=False)
+    camera_id = Column(String, nullable=False)
+    observed_at = Column(DateTime(timezone=True), nullable=False)
+    producer_id = Column(String, nullable=False, default="local")
+    object_type = Column(String, nullable=True)
+    provider = Column(String, nullable=False)
+    model_version = Column(String, nullable=False)
+    dimensions = Column(Integer, nullable=False)
+    vector = Column(JSON, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self, include_vector=False):
+        result = {
+            "id": self.id,
+            "observation_id": self.observation_id,
+            "camera_id": self.camera_id,
+            "observed_at": _utc_iso(self.observed_at),
+            "producer_id": self.producer_id,
+            "object_type": self.object_type,
+            "provider": self.provider,
+            "model_version": self.model_version,
+            "dimensions": self.dimensions,
+            "content_hash": self.content_hash,
+            "created_at": _utc_iso(self.created_at),
+        }
+        if include_vector:
+            result["vector"] = self.vector
+        return result
 
 
 class AlertRule(Base):
