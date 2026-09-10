@@ -44,6 +44,7 @@ from .imaging import frame_to_pil, image_to_data_uri
 from .models import AlertRule, Camera, ChatMessage, Event, Observation, CpuConfig
 from .observation_query import answer_observation_question
 from .visual_search import find_by_text, find_similar, initialize_vector_backend, provider_status, vector_backend_status
+from .verification import select_candidates, verification_prompt, wants_verification
 from .monitor import monitor
 from .runtime import vlm
 from . import yolo
@@ -808,6 +809,31 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
             raise HTTPException(status_code=400, detail="Select a camera first.")
         if focused_camera is not None:
             forced_camera_id = focused_camera.id
+    if wants_verification(req.question):
+        plan, candidates = select_candidates(db, req.question, all_cameras, forced_camera_id)
+        if plan is not None:
+            if not candidates:
+                answer = "No stored evidence frames matched this verification request."
+                _save_turn(db, "user", req.question)
+                _save_turn(db, "assistant", answer)
+                return {"question": req.question, "answer": answer, "scope": "verification", "cameras_used": [], "evidence": [], "query_plan": plan}
+            if not vlm.ready:
+                raise HTTPException(503, vlm.error or "Test a vision model in AI setup before verifying stored evidence.")
+            camera_names = {camera.id: camera.name for camera in all_cameras}
+            prompt = verification_prompt(req.question, candidates, camera_names)
+            images = [image for _, image in candidates]
+            answer = vlm.ask(images, prompt, max_new_tokens=512, history=_recent_history(db), on_token=on_token)
+            evidence = [
+                {"observation_id": row.id, "event_id": row.event_id, "camera_id": row.camera_id,
+                 "camera_name": camera_names.get(row.camera_id, row.camera_id), "timestamp": row.to_dict()["observed_at"]}
+                for row, _ in candidates
+            ]
+            used = list(dict.fromkeys(item["camera_id"] for item in evidence))
+            snapshot = image_to_data_uri(images[0])
+            _save_turn(db, "user", req.question)
+            _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
+            return {"question": req.question, "answer": answer, "scope": "verification", "cameras_used": used,
+                    "snapshot": snapshot, "evidence": evidence, "query_plan": plan}
     observation_answer = answer_observation_question(db, req.question, all_cameras, forced_camera_id)
     if observation_answer is not None:
         _save_turn(db, "user", req.question)

@@ -80,7 +80,7 @@ def plan_observation_query(question, cameras, forced_camera_id=None, now=None):
     }
 
 
-def _base_query(db, plan):
+def observation_query(db, plan):
     query = db.query(Observation)
     if plan["camera_id"]:
         query = query.filter(Observation.camera_id == plan["camera_id"])
@@ -115,7 +115,7 @@ def answer_observation_question(db, question, cameras, forced_camera_id=None):
     plan = plan_observation_query(question, cameras, forced_camera_id)
     if plan is None:
         return None
-    query = _base_query(db, plan)
+    query = observation_query(db, plan)
     newest = query.order_by(Observation.observed_at.desc(), Observation.id.desc()).first()
     camera_names = {camera.id: camera.name for camera in cameras}
     noun = _noun(plan)

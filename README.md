@@ -163,6 +163,17 @@ the same image/text vector space, and `GET /api/visual-search?q=red+vehicle`
 searches them. Existing OpenCV vectors remain valid and searchable by reference;
 changing providers does not reinterpret or delete earlier vectors.
 
+### Selective VLM verification
+
+Historical chat questions containing `verify`, `confirm`, `double-check`, or
+`check the evidence` first run through the deterministic observation planner.
+Argus selects distinct tracked objects with stored evidence, prefers coverage
+across cameras, and sends at most `ARGUS_VLM_VERIFY_MAX_FRAMES` images to the
+configured VLM (default `6`, hard maximum `12`). Responses include the exact
+observation IDs, event IDs, camera names, and timestamps used as evidence.
+Detector labels are retrieval hints; the VLM is instructed to report uncertainty
+and never infer a shared identity across cameras.
+
 Other controls: `VIDEOS_DIR`, `QWENVL_MODEL_ID`, `CHAT_FRAMES_SINGLE_CAMERA`,
 `VLM_MIN_PIXELS`, `VLM_MAX_PIXELS`, `CHAT_HISTORY_TURNS`, `MONITOR_ENABLED`,
 `MONITOR_MIN_VLM_INTERVAL_SECONDS`, and `MONITOR_MOTION_THRESHOLD`.
