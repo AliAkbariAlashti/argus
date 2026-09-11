@@ -193,8 +193,27 @@ class AgentRuntime:
             return {"answer": answer, "camera_ids": used, "camera_names": labels, "observed_at": datetime.now(timezone.utc).isoformat()}, used, image_to_data_uri(images[0])
         return {"error": f"Unknown tool: {name}"}, [], None
 
-    def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, session_id="unsaved"):
+    @staticmethod
+    def _remember(context, tool, result, used):
+        context = dict(context or {})
+        if used:
+            context["camera_ids"] = list(dict.fromkeys(used))[:20]
+        if tool == "search_observations":
+            context["observations"] = [{key: item.get(key) for key in ("id", "camera_id", "observed_at", "object_type", "track_id", "global_entity_id")} for item in result.get("observations", [])[:10]]
+        elif tool == "search_events":
+            context["events"] = [{key: item.get(key) for key in ("id", "camera_id", "created_at", "category", "severity")} for item in result.get("events", [])[:10]]
+        elif tool == "get_track_timeline":
+            context["track_timeline"] = [{key: item.get(key) for key in ("id", "camera_id", "observed_at", "track_id", "global_entity_id")} for item in result.get("timeline", [])[:20]]
+        elif result.get("proposal"):
+            context["pending_action"] = {key: result["proposal"].get(key) for key in ("id", "action", "summary", "status")}
+        context["last_tool"] = tool
+        return context
+
+    def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, session_id="unsaved", session_context=None):
         messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=datetime.now(timezone.utc).isoformat())}]
+        context = dict(session_context or {})
+        if context:
+            messages.append({"role": "system", "content": "Structured context retained from this conversation. Resolve follow-ups against these stable IDs:\n" + json.dumps(context, default=str)[:12000]})
         messages.extend({"role": item["role"], "content": item["text"]} for item in history)
         messages.append({"role": "user", "content": question})
         trace, cameras_used, snapshot, pending_actions = [], [], None, []
@@ -205,7 +224,7 @@ class AgentRuntime:
                 content = message.get("content")
                 if not isinstance(content, str) or not content.strip():
                     raise AgentUnavailable("Instruction model returned no answer.")
-                return {"answer": content.strip(), "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot, "tool_trace": trace, "pending_actions": pending_actions, "steps": step + 1}
+                return {"answer": content.strip(), "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot, "tool_trace": trace, "pending_actions": pending_actions, "session_context": context, "steps": step + 1}
             messages.append(message)
             for call in calls:
                 function = call.get("function") or {}
@@ -228,6 +247,7 @@ class AgentRuntime:
                                     result=result, status=status, duration_ms=round((time.monotonic() - started) * 1000)))
                 db.commit()
                 trace.append({"tool": name, "arguments": args, "result": result})
+                context = self._remember(context, name, result, used)
                 if result.get("proposal"):
                     pending_actions.append(result["proposal"])
                 cameras_used.extend(used)

@@ -61,3 +61,12 @@ def test_agent_accepts_invalid_tool_arguments_without_crashing(monkeypatch):
     result = runtime.answer("test", [], fake_db(), object(), object(), SimpleNamespace())
     assert seen == [{}]
     assert result["answer"] == "I could not run that tool."
+
+
+def test_structured_context_keeps_stable_follow_up_ids():
+    context = AgentRuntime._remember({}, "search_observations", {"observations": [
+        {"id": "obs-1", "camera_id": "cam-1", "observed_at": "2026-01-01T00:00:00Z", "object_type": "person", "track_id": "track-7", "global_entity_id": None},
+    ]}, ["cam-1"])
+    assert context["camera_ids"] == ["cam-1"]
+    assert context["observations"][0]["id"] == "obs-1"
+    assert context["observations"][0]["track_id"] == "track-7"

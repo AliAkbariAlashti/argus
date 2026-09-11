@@ -111,6 +111,11 @@ def _add_chat_session_column():
             conn.execute(text("INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES ('legacy', 'Previous conversation', NOW(), NOW()) ON CONFLICT (id) DO NOTHING"))
             conn.execute(text("UPDATE chat_messages SET session_id = 'legacy' WHERE session_id IS NULL"))
             conn.execute(text("ALTER TABLE chat_messages ALTER COLUMN session_id SET NOT NULL"))
+        session_columns = {row[0] for row in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'chat_sessions'"
+        ))}
+        if session_columns and "context" not in session_columns:
+            conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN context JSON NOT NULL DEFAULT '{}'::json"))
 
 
 def _seed_and_start_cameras():
@@ -972,8 +977,10 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
         try:
             result = agent_runtime.answer(
                 req.question, _recent_history(db, session.id), db, registry, cpu_monitor, vlm,
-                on_status=on_status, session_id=session.id,
+                on_status=on_status, session_id=session.id, session_context=session.context or {},
             )
+            session.context = result.pop("session_context")
+            db.commit()
             _save_turn(db, session.id, "user", req.question)
             _save_turn(db, session.id, "assistant", result["answer"], cameras_used=result["cameras_used"], snapshot=result["snapshot"])
             return {"question": req.question, "scope": "agent", **result}

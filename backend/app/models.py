@@ -53,9 +53,10 @@ class ChatSession(Base):
     title = Column(String(120), nullable=False, default="New chat")
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    context = Column(JSON, nullable=False, default=dict)
 
     def to_dict(self):
-        return {"id": self.id, "title": self.title, "created_at": _utc_iso(self.created_at), "updated_at": _utc_iso(self.updated_at)}
+        return {"id": self.id, "title": self.title, "created_at": _utc_iso(self.created_at), "updated_at": _utc_iso(self.updated_at), "context": self.context or {}}
 
 
 class ChatMessage(Base):
