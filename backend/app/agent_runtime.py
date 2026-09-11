@@ -50,15 +50,31 @@ class AgentRuntime:
         base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
         return base + "/v1/chat/completions"
 
+    def _is_ollama(self):
+        return "ollama" in self.base_url.lower() or any(port in self.base_url for port in (":11434", ":11435"))
+
     def _complete(self, messages):
         if not self.configured:
             raise AgentUnavailable("No Argus instruction model is configured.")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        payload = {"model": self.model, "messages": messages, "tools": TOOLS, "tool_choice": "auto", "temperature": 0.1, "stream": False}
+        payload = {"model": self.model, "messages": messages, "tools": TOOLS, "stream": False}
+        url = self._url()
+        if self._is_ollama():
+            base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+            url = base + "/api/chat"
+            payload.update({"think": False, "options": {"temperature": 0.1, "num_predict": 512}})
+        else:
+            payload.update({"tool_choice": "auto", "temperature": 0.1, "max_tokens": 512, "reasoning_effort": "none"})
         try:
-            response = httpx.post(self._url(), headers=headers, json=payload, timeout=AGENT_TIMEOUT_SECONDS)
+            response = httpx.post(url, headers=headers, json=payload, timeout=AGENT_TIMEOUT_SECONDS)
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]
+            packet = response.json()
+            message = packet["message"] if self._is_ollama() else packet["choices"][0]["message"]
+            for call in message.get("tool_calls") or []:
+                arguments = (call.get("function") or {}).get("arguments")
+                if isinstance(arguments, dict):
+                    call["function"]["arguments"] = json.dumps(arguments)
+            return message
         except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise AgentUnavailable(f"Instruction model unavailable: {exc}") from None
 

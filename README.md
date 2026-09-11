@@ -234,9 +234,9 @@ agent does not require the two roles to use the same provider or machine.
 For a local Ollama planner, install a tool-capable instruction model and set:
 
 ```bash
-ollama pull qwen3:4b
+ollama pull qwen3:4b-instruct-2507-q4_K_M
 ARGUS_AGENT_BASE_URL=http://host.docker.internal:11435/v1
-ARGUS_AGENT_MODEL=qwen3:4b
+ARGUS_AGENT_MODEL=qwen3:4b-instruct-2507-q4_K_M
 ```
 
 `ARGUS_AGENT_BASE_URL` may instead point to any OpenAI-compatible endpoint.
