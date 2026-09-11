@@ -27,7 +27,7 @@ def test_agent_runs_multiple_tools_then_answers(monkeypatch):
     monkeypatch.setattr(runtime, "_complete", lambda messages: next(replies))
     calls = []
 
-    def fake_tool(name, args, db, registry, cpu_monitor, vlm):
+    def fake_tool(name, args, db, registry, cpu_monitor, vlm, session_id):
         calls.append((name, args))
         return ({"ok": True}, ["cam-1"], None)
 

@@ -8,13 +8,14 @@ import httpx
 from sqlalchemy import func
 
 from .config import AGENT_API_KEY, AGENT_BASE_URL, AGENT_MAX_STEPS, AGENT_MODEL, AGENT_TIMEOUT_SECONDS
+from .agent_actions import create_proposal
 from .cpu import CpuSettings
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AgentToolRun, Camera, CpuConfig, Event, Observation
+from .models import AgentToolRun, AlertRule, Camera, CpuConfig, Event, Observation
 
 log = logging.getLogger("qwenvl.agent_runtime")
 
-SYSTEM_PROMPT = """You are Argus, an operator for a CCTV system. Talk naturally and help the user investigate and operate their camera network. Use tools whenever the answer depends on cameras, current scenes, health, events, or observations. You may call several tools before answering. Never claim you saw something unless a tool returned evidence. State camera names and timestamps when available. Explain uncertainty briefly. Do not invent camera IDs, records, or tool results. Current UTC time: {now}."""
+SYSTEM_PROMPT = """You are Argus, an operator for a CCTV system. Talk naturally and help the user investigate and operate their camera network. Use tools whenever the answer depends on cameras, current scenes, health, events, observations, rules, or configuration. You may call several tools before answering. Never claim you saw something unless a tool returned evidence. State camera names and timestamps when available. Explain uncertainty briefly. Do not invent camera IDs, records, or tool results. Any state-changing tool creates a proposal only; tell the user what you prepared and that they must approve its confirmation card. Current UTC time: {now}."""
 
 
 TOOLS = [
@@ -24,6 +25,12 @@ TOOLS = [
     {"type": "function", "function": {"name": "search_events", "description": "Search operator-facing activity events and alerts.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}, "category": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 10080}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "get_activity_report", "description": "Return exact grouped counts of observations and events for a time window.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 10080}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "get_track_timeline", "description": "Get the chronological observation timeline for one track or confirmed cross-camera entity.", "parameters": {"type": "object", "properties": {"track_id": {"type": "string"}, "global_entity_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "anyOf": [{"required": ["track_id"]}, {"required": ["global_entity_id"]}], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "list_alert_rules", "description": "List alert rules and whether they are enabled.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_cpu_configuration", "description": "Read CPU-tool settings for selected or all cameras.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_alert_rule", "description": "Prepare an alert rule for operator confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["target"], "properties": {"camera_id": {"type": "string"}, "source": {"type": "string", "enum": ["cpu", "vlm"]}, "target": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_cpu_configuration", "description": "Prepare a partial CPU-tool configuration change for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["camera_id", "settings"], "properties": {"camera_id": {"type": "string"}, "settings": {"type": "object", "properties": {"enabled": {"type": "boolean"}, "motion_alerts": {"type": "boolean"}, "quality_alerts": {"type": "boolean"}, "object_alerts": {"type": "boolean"}, "tracking_enabled": {"type": "boolean"}, "line_crossing_alerts": {"type": "boolean"}, "dwell_alerts": {"type": "boolean"}, "dwell_seconds": {"type": "integer", "minimum": 10, "maximum": 86400}, "object_confidence": {"type": "number", "minimum": 0.1, "maximum": 0.95}}, "additionalProperties": False}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_rtsp_camera", "description": "Prepare adding an RTSP camera for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["name", "rtsp_url"], "properties": {"name": {"type": "string"}, "rtsp_url": {"type": "string"}, "location": {"type": "string"}, "zone_tags": {"type": "array", "items": {"type": "string"}}, "description": {"type": "string"}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_delete_camera", "description": "Prepare deleting an RTSP camera for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["camera_id"], "properties": {"camera_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "inspect_live_cameras", "description": "Ask the vision model to inspect current frames. Use only when pixels must be examined, after identifying relevant cameras.", "parameters": {"type": "object", "required": ["camera_ids", "question"], "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
 ]
 
@@ -82,7 +89,7 @@ class AgentRuntime:
     def _since(query, column, minutes):
         return query.filter(column >= datetime.now(timezone.utc) - timedelta(minutes=minutes)) if minutes else query
 
-    def _run_tool(self, name, args, db, registry, cpu_monitor, vlm):
+    def _run_tool(self, name, args, db, registry, cpu_monitor, vlm, session_id="unsaved"):
         cameras = db.query(Camera).order_by(Camera.created_at).all()
         by_id = {camera.id: camera for camera in cameras}
         requested = args.get("camera_ids") or []
@@ -149,6 +156,27 @@ class AgentRuntime:
                 return {"error": "Provide track_id or global_entity_id."}, [], None
             rows = query.order_by(Observation.observed_at).limit(min(args.get("limit", 100), 200)).all()
             return {"count": len(rows), "timeline": [row.to_dict() for row in rows]}, list(dict.fromkeys(row.camera_id for row in rows)), None
+        if name == "list_alert_rules":
+            rows = db.query(AlertRule).order_by(AlertRule.created_at).all()
+            return {"rules": [row.to_dict() for row in rows]}, list(dict.fromkeys(row.camera_id for row in rows if row.camera_id)), None
+        if name == "get_cpu_configuration":
+            data = []
+            for camera in selected:
+                row = db.get(CpuConfig, camera.id)
+                data.append({"camera_id": camera.id, "camera_name": camera.name, "settings": CpuSettings(**(row.settings if row else {})).model_dump()})
+            return {"cameras": data}, [camera.id for camera in selected], None
+        proposal_map = {
+            "propose_alert_rule": ("create_alert_rule", f"Create {args.get('source', 'vlm')} alert for {args.get('target', '')}"),
+            "propose_cpu_configuration": ("configure_cpu", f"Change CPU tools for {by_id.get(args.get('camera_id')).name if by_id.get(args.get('camera_id')) else args.get('camera_id', '')}"),
+            "propose_rtsp_camera": ("add_rtsp_camera", f"Add RTSP camera {args.get('name', '')}"),
+            "propose_delete_camera": ("delete_camera", f"Delete camera {by_id.get(args.get('camera_id')).name if by_id.get(args.get('camera_id')) else args.get('camera_id', '')}"),
+        }
+        if name in proposal_map:
+            action, summary = proposal_map[name]
+            action_args = dict(args)
+            if action == "add_rtsp_camera": action_args["rtsp_url"] = action_args.pop("rtsp_url", "")
+            row = create_proposal(db, session_id, action, action_args, summary)
+            return {"proposal": row.to_dict(), "requires_confirmation": True}, requested, None
         if name == "inspect_live_cameras":
             if not vlm.ready:
                 return {"error": vlm.error or "Vision model is not ready."}, [], None
@@ -169,7 +197,7 @@ class AgentRuntime:
         messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=datetime.now(timezone.utc).isoformat())}]
         messages.extend({"role": item["role"], "content": item["text"]} for item in history)
         messages.append({"role": "user", "content": question})
-        trace, cameras_used, snapshot = [], [], None
+        trace, cameras_used, snapshot, pending_actions = [], [], None, []
         for step in range(self.max_steps):
             message = self._complete(messages)
             calls = message.get("tool_calls") or []
@@ -177,7 +205,7 @@ class AgentRuntime:
                 content = message.get("content")
                 if not isinstance(content, str) or not content.strip():
                     raise AgentUnavailable("Instruction model returned no answer.")
-                return {"answer": content.strip(), "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot, "tool_trace": trace, "steps": step + 1}
+                return {"answer": content.strip(), "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot, "tool_trace": trace, "pending_actions": pending_actions, "steps": step + 1}
             messages.append(message)
             for call in calls:
                 function = call.get("function") or {}
@@ -190,7 +218,7 @@ class AgentRuntime:
                 started = time.monotonic()
                 status = "completed"
                 try:
-                    result, used, evidence = self._run_tool(name, args, db, registry, cpu_monitor, vlm)
+                    result, used, evidence = self._run_tool(name, args, db, registry, cpu_monitor, vlm, session_id)
                     if result.get("error"):
                         status = "error"
                 except Exception as exc:  # keep one failed tool from destroying the conversation
@@ -200,6 +228,8 @@ class AgentRuntime:
                                     result=result, status=status, duration_ms=round((time.monotonic() - started) * 1000)))
                 db.commit()
                 trace.append({"tool": name, "arguments": args, "result": result})
+                if result.get("proposal"):
+                    pending_actions.append(result["proposal"])
                 cameras_used.extend(used)
                 snapshot = snapshot or evidence
                 messages.append({"role": "tool", "tool_call_id": call.get("id", f"step-{step}"), "name": name, "content": json.dumps(result, default=str)[:30000]})

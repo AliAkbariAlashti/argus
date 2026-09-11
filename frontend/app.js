@@ -422,9 +422,12 @@ async function loadChatHistory() {
   try {
     if (chatBusy) return;
     if (!activeChatSessionId) return;
-    const res = await fetch(`${API}/api/chat/history?session_id=${encodeURIComponent(activeChatSessionId)}`);
+    const [res, actionRes] = await Promise.all([
+      fetch(`${API}/api/chat/history?session_id=${encodeURIComponent(activeChatSessionId)}`),
+      fetch(`${API}/api/agent/actions?session_id=${encodeURIComponent(activeChatSessionId)}`),
+    ]);
     if (!res.ok) return;
-    const rows = await res.json();
+    const rows = await res.json(), actions = actionRes.ok ? await actionRes.json() : [];
     if (chatBusy) return;
     chatLog.length = 0;
     for (const row of rows) {
@@ -435,6 +438,8 @@ async function loadChatHistory() {
         snapshot: row.snapshot,
       });
     }
+    const lastAssistant = [...chatLog].reverse().find(message => message.role === "ai");
+    if (lastAssistant && actions.length) lastAssistant.pendingActions = actions;
     renderChat();
   } catch (e) {
     // A missing transcript shouldn't block using the app.
@@ -506,7 +511,7 @@ function renderChat() {
     return;
   }
   for (const msg of chatLog) {
-    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot, msg.scope, msg.evidence);
+    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot, msg.scope, msg.evidence, msg.pendingActions);
   }
   el.chatLog.scrollTop = el.chatLog.scrollHeight;
 }
@@ -520,7 +525,7 @@ function camerasUsedLabel(camIds) {
   return names.length === 1 ? names[0] : names.join(", ");
 }
 
-function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evidence) {
+function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evidence, pendingActions) {
   const bubble = document.createElement("div");
   bubble.className = `msg msg-${role}` + (thinking ? " thinking" : "");
 
@@ -560,6 +565,40 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evi
       list.appendChild(evidenceItem);
     }
     bubble.appendChild(list);
+  }
+
+  if (pendingActions?.length) {
+    const actions = document.createElement("div");
+    actions.className = "agent-actions";
+    for (const action of pendingActions) {
+      const card = document.createElement("div");
+      card.className = `agent-action ${action.status}`;
+      card.innerHTML = `<div><strong>${escapeHtml(action.summary)}</strong><span>${escapeHtml(action.action.replaceAll("_", " "))}</span></div><div class="agent-action-controls"></div>`;
+      const controls = card.querySelector(".agent-action-controls");
+      if (action.status === "pending") {
+        for (const [decision, label] of [["reject", "Reject"], ["approve", "Approve"]]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = decision === "approve" ? "btn-primary" : "btn-ghost";
+          button.textContent = label;
+          button.onclick = async () => {
+            controls.querySelectorAll("button").forEach(item => item.disabled = true);
+            const res = await fetch(`${API}/api/agent/actions/${encodeURIComponent(action.id)}/decision`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({decision})});
+            if (res.ok) Object.assign(action, await res.json());
+            else action.status = "failed";
+            renderChat();
+            loadCameras();
+          };
+          controls.appendChild(button);
+        }
+      } else {
+        const state = document.createElement("span");
+        state.textContent = action.status;
+        controls.appendChild(state);
+      }
+      actions.appendChild(card);
+    }
+    bubble.appendChild(actions);
   }
 
   const label = camerasUsedLabel(camerasUsed);
@@ -694,7 +733,7 @@ el.chatForm.addEventListener("submit", async (e) => {
         el.chatLog.scrollTop = el.chatLog.scrollHeight;
       }
     });
-    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot, scope: data.scope, evidence: data.evidence });
+    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot, scope: data.scope, evidence: data.evidence, pendingActions: data.pending_actions });
     const resultType = data.evidence?.length ? `${data.evidence.length} evidence item${data.evidence.length === 1 ? "" : "s"}` : data.snapshot ? "Evidence attached" : (data.scope || "Completed");
     progress.textContent = `Agent complete · ${data.elapsed_seconds}s · ${resultType}`;
   } catch (err) {

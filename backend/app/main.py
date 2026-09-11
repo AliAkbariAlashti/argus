@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from .camera import registry
 from .agent import answer_health_question
 from .agent_runtime import AgentUnavailable, agent_runtime
+from .agent_actions import decide_action
 from .cpu import CpuSettings, cpu_monitor, events_csv, health as cpu_health
 from .config import (
     CHAT_FRAMES_SINGLE_CAMERA,
@@ -43,7 +44,7 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AgentToolRun, AlertRule, Camera, CameraLink, ChatMessage, ChatSession, EntityAssociation, Event, Observation, CpuConfig
+from .models import AgentAction, AgentToolRun, AlertRule, Camera, CameraLink, ChatMessage, ChatSession, EntityAssociation, Event, Observation, CpuConfig
 from .entity_matching import decide_association, suggest_matches
 from .observation_query import answer_observation_question
 from .visual_search import find_by_text, find_similar, initialize_vector_backend, provider_status, vector_backend_status
@@ -783,6 +784,10 @@ class AssociationDecision(BaseModel):
     status: str = Field(pattern="^(confirmed|rejected)$")
 
 
+class AgentActionDecision(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+
+
 @app.get("/api/camera-links")
 def list_camera_links(db: Session = Depends(get_db)):
     return [row.to_dict() for row in db.query(CameraLink).order_by(CameraLink.from_camera_id, CameraLink.to_camera_id).all()]
@@ -876,6 +881,8 @@ def delete_chat_session(session_id: str, db: Session = Depends(get_db)):
         if row is None:
             raise HTTPException(404, "Conversation not found.")
         db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
+        db.query(AgentAction).filter(AgentAction.session_id == session_id).delete()
+        db.query(AgentToolRun).filter(AgentToolRun.session_id == session_id).delete()
         db.delete(row)
         db.commit()
         return {"deleted": session_id}
@@ -901,6 +908,9 @@ def clear_chat_history(session_id: Optional[str] = None, db: Session = Depends(g
         if session_id:
             query = query.filter(ChatMessage.session_id == session_id)
         deleted = query.delete()
+        if session_id:
+            db.query(AgentAction).filter(AgentAction.session_id == session_id).delete()
+            db.query(AgentToolRun).filter(AgentToolRun.session_id == session_id).delete()
         db.commit()
         return {"deleted": deleted}
     finally:
@@ -1144,6 +1154,26 @@ def agent_tool_runs(session_id: Optional[str] = None, limit: int = 100, db: Sess
         query = query.filter(AgentToolRun.session_id == session_id)
     rows = query.order_by(AgentToolRun.created_at.desc()).limit(max(1, min(limit, 500))).all()
     return [row.to_dict() for row in rows]
+
+
+@app.get("/api/agent/actions")
+def agent_actions(session_id: Optional[str] = None, status: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(AgentAction)
+    if session_id:
+        query = query.filter(AgentAction.session_id == session_id)
+    if status:
+        if status not in ("pending", "approved", "rejected", "failed"):
+            raise HTTPException(400, "Invalid action status.")
+        query = query.filter(AgentAction.status == status)
+    return [row.to_dict() for row in query.order_by(AgentAction.created_at.desc()).limit(200).all()]
+
+
+@app.post("/api/agent/actions/{action_id}/decision")
+def agent_action_decision(action_id: str, payload: AgentActionDecision, db: Session = Depends(get_db)):
+    row = db.get(AgentAction, action_id)
+    if row is None:
+        raise HTTPException(404, "Agent action not found.")
+    return decide_action(db, row, payload.decision, registry, cpu_monitor).to_dict()
 
 
 @app.post("/api/agent/test")

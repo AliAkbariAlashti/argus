@@ -110,6 +110,28 @@ class AgentToolRun(Base):
                 "duration_ms": self.duration_ms, "created_at": _utc_iso(self.created_at)}
 
 
+class AgentAction(Base):
+    """A model-proposed state change that requires an operator decision."""
+
+    __tablename__ = "agent_actions"
+    __table_args__ = (Index("ix_agent_actions_session_status", "session_id", "status"),)
+
+    id = Column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    session_id = Column(String(32), nullable=False)
+    action = Column(String(80), nullable=False)
+    summary = Column(Text, nullable=False)
+    arguments = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="pending")  # pending, approved, rejected, failed
+    result = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+
+    def to_dict(self):
+        return {"id": self.id, "session_id": self.session_id, "action": self.action, "summary": self.summary,
+                "arguments": self.arguments or {}, "status": self.status, "result": self.result,
+                "created_at": _utc_iso(self.created_at), "decided_at": _utc_iso(self.decided_at)}
+
+
 class Event(Base):
     """A system-detected occurrence — from the background VLM monitor or CPU
     tools' own detectors (motion, face, people, object). This is the single,
