@@ -65,7 +65,7 @@ def test_chat_verification_sends_only_selected_evidence(monkeypatch):
         main, "select_candidates",
         lambda *args: ({"intent": "list"}, [(observation, Image.new("RGB", (8, 8)))]),
     )
-    monkeypatch.setattr(main, "_recent_history", lambda db: [])
+    monkeypatch.setattr(main, "_recent_history", lambda db, session_id: [])
     monkeypatch.setattr(main, "_save_turn", Mock())
 
     result = main._answer_chat(main.ChatRequest(question="Verify the person detected yesterday"), db)

@@ -9,7 +9,7 @@ def test_historical_chat_uses_observation_plan_without_calling_vlm(monkeypatch):
     db = Mock()
     db.query.return_value.order_by.return_value.all.return_value = [camera]
     saved = []
-    monkeypatch.setattr(main, "_save_turn", lambda db, role, text, **kwargs: saved.append((role, text, kwargs)))
+    monkeypatch.setattr(main, "_save_turn", lambda db, session_id, role, text, **kwargs: saved.append((role, text, kwargs)))
     monkeypatch.setattr(main, "answer_observation_question", lambda *args: {
         "answer": "I found 2 unique tracked people.",
         "cameras_used": ["cam1"],

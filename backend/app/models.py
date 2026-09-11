@@ -46,6 +46,18 @@ class Camera(Base):
         }
 
 
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+
+    id = Column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    title = Column(String(120), nullable=False, default="New chat")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {"id": self.id, "title": self.title, "created_at": _utc_iso(self.created_at), "updated_at": _utc_iso(self.updated_at)}
+
+
 class ChatMessage(Base):
     """One turn of the (single, fleet-wide) conversation. Persisted so the
     transcript survives a refresh and can be replayed to the model as
@@ -54,6 +66,7 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(32), nullable=False, index=True)
     role = Column(String, nullable=False)  # "user" | "assistant"
     text = Column(Text, nullable=False)
     # Which cameras informed this answer (empty for user turns).
@@ -66,6 +79,7 @@ class ChatMessage(Base):
     def to_dict(self):
         return {
             "id": self.id,
+            "session_id": self.session_id,
             "role": self.role,
             "text": self.text,
             "cameras_used": self.cameras_used or [],

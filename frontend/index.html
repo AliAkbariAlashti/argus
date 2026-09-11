@@ -13,17 +13,23 @@
 <body>
   <div class="app">
     <nav class="rail">
+      <button class="rail-collapse" id="rail-collapse" type="button" aria-label="Close sidebar" title="Close sidebar">‹</button>
       <div class="rail-brand" title="Argus · Video Intelligence">
         <span class="brand-mark"><img src="assets/argus-mark.svg" alt="Argus, the many-eyed guardian" /></span><span class="brand-word">argus<span>VIDEO INTELLIGENCE</span></span>
       </div>
 
-      <button class="rail-btn active" data-view="dashboard" title="Overview">
+      <button class="new-chat-btn" id="new-chat" type="button">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span>
+      </button>
+      <div class="chat-session-list" id="chat-session-list" aria-label="Conversations"></div>
+
+      <button class="rail-btn active" data-view="chat" title="Argus Agent">
+        <svg viewBox="0 0 24 24"><path d="M4 4h16v12H7l-3 3V4z"/></svg>
+        <span>Argus Agent</span>
+      </button>
+      <button class="rail-btn" data-view="dashboard" title="Overview">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg>
         <span>Overview</span>
-      </button>
-      <button class="rail-btn" data-view="chat" title="Chat">
-        <svg viewBox="0 0 24 24"><path d="M4 4h16v12H7l-3 3V4z"/></svg>
-        <span>Live analyst</span>
       </button>
       <button class="rail-btn" data-view="alerts" title="Alerts">
         <svg viewBox="0 0 24 24"><path d="M12 2a6 6 0 00-6 6v4l-2 4h16l-2-4V8a6 6 0 00-6-6zm0 18a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 20z"/></svg>
@@ -54,8 +60,9 @@
     </nav>
 
     <div class="main-col">
+      <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Open navigation" title="Open navigation"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
       <header class="topbar">
-        <div class="topbar-breadcrumb">Workspace <span>/</span> <span class="topbar-title" id="topbar-title">Overview</span></div>
+        <div class="topbar-breadcrumb"><span class="topbar-title" id="topbar-title">Argus Agent</span></div>
         <div class="topbar-status">
           <span id="model-status" class="pill pill-loading">
             <span class="dot"></span> Loading model…
@@ -65,7 +72,7 @@
       </header>
 
       <!-- ============ SEARCH / DASHBOARD ============ -->
-      <section class="view" id="view-dashboard">
+      <section class="view" id="view-dashboard" hidden>
         <div class="search-page">
           <div class="page-heading"><div><div class="eyebrow">YOUR SITE, IN SIGHT</div><h1>See what matters.</h1><p>A clear view of your cameras. Answers grounded in what they see.</p></div><button class="btn-primary" id="open-analyst">Open live analyst ↗</button></div><div class="stat-row" id="stat-row"></div>
 
@@ -123,10 +130,11 @@
       </section>
 
       <!-- ============ CHAT VIEW ============ -->
-      <section class="view" id="view-chat" hidden>
+      <section class="view" id="view-chat">
         <div class="chat-layout">
           <div class="chat-strip-col">
-            <div class="section-label">SOURCES</div><div class="chat-strip" id="chat-strip"></div>
+            <div class="agent-side-heading"><span class="agent-live-dot"></span><div><strong>Camera context</strong><small>Select a camera when your request concerns one view.</small></div></div>
+            <div class="chat-strip" id="chat-strip"></div>
           </div>
 
           <div class="viewer">
@@ -149,15 +157,14 @@
           <div class="chat">
             <div class="chat-header">
               <div>
-                <span><span class="analyst-symbol">✳</span> Argus analyst</span>
-                <span class="chat-sub">A conversation grounded in your cameras</span>
+                <span><span class="analyst-symbol">✳</span> Argus Agent</span>
               </div>
               <button class="btn-icon" id="btn-clear-chat" title="Clear conversation">Clear</button>
             </div>
 
-            <div class="scope-control"><label for="chat-scope">Look at</label><select id="chat-scope"><option value="camera">Selected camera</option><option value="fleet">All cameras</option><option value="auto">Let Argus choose</option><option value="cpu">CPU measurements (no model)</option></select></div><div id="chat-log" class="chat-log" role="log" aria-live="polite">
+            <div class="scope-control"><label for="chat-scope">Agent scope</label><select id="chat-scope"><option value="auto" selected>Let Argus choose tools</option><option value="camera">Selected camera</option><option value="fleet">All cameras</option><option value="cpu">CPU measurements</option></select></div><div id="chat-log" class="chat-log" role="log" aria-live="polite">
               <div class="chat-empty" id="chat-empty">
-                No conversation yet. Try one of the prompts below, or ask your own question.
+                Tell Argus what you need to investigate or operate.
               </div>
             </div>
 
@@ -168,7 +175,7 @@
                 id="chat-input"
                 class="chat-input"
                 type="text"
-                placeholder="Ask about what you see…" aria-label="Question for Argus" maxlength="2000"
+                placeholder="Ask Argus about cameras, activity, evidence, or system health…" aria-label="Question for Argus" maxlength="2000"
                 autocomplete="off"
               />
               <button type="submit" class="chat-send" id="chat-send">Send ↑</button>

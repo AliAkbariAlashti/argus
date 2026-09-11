@@ -12,3 +12,4 @@ backend/server.log
 # Local AI connection settings may contain credentials.
 backend/data/
 node_modules/
+.env

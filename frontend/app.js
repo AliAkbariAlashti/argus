@@ -2,11 +2,13 @@ const API = "";
 
 let cameras = [];
 let activeCameraId = null;
-let currentView = "dashboard";
+let currentView = "chat";
 // One global conversation covering every camera, not one per camera —
 // switching the focused camera only changes the live view, never wipes
 // context. Each entry: {role, text, thinking?, camerasUsed?}
 const chatLog = [];
+let chatSessions = [];
+let activeChatSessionId = localStorage.getItem("argus-chat-session");
 
 const el = {
   clock: document.getElementById("clock"),
@@ -88,9 +90,22 @@ const el = {
   btnSubmitEditCamera: document.getElementById("btn-submit-edit-camera"),
 };
 
+const appShell = document.querySelector(".app");
+const sidebarToggle = document.getElementById("sidebar-toggle");
+const railCollapse = document.getElementById("rail-collapse");
+
+function setSidebarCollapsed(collapsed) {
+  appShell.classList.toggle("rail-collapsed", collapsed);
+  sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+  localStorage.setItem("argus-sidebar-collapsed", collapsed ? "1" : "0");
+}
+railCollapse.addEventListener("click", () => setSidebarCollapsed(true));
+sidebarToggle.addEventListener("click", () => setSidebarCollapsed(!appShell.classList.contains("rail-collapsed")));
+setSidebarCollapsed(localStorage.getItem("argus-sidebar-collapsed") === "1" || innerWidth < 700);
+
 const VIEW_TITLES = {
   dashboard: "Overview",
-  chat: "Live analyst",
+  chat: "Argus Agent",
   alerts: "Activity",
   rules: "Alert Rules",
   archive: "Archive",
@@ -119,7 +134,7 @@ async function pollStatus() {
     const data = await res.json();
     if (data.model_ready) {
       el.modelStatus.className = "pill pill-ready";
-      el.modelStatus.innerHTML = `<span class="dot"></span> Analyst ready`;
+      el.modelStatus.innerHTML = `<span class="dot"></span> Agent ready`;
       el.railStatus.className = "rail-status ready";
     } else if (data.configured === false) {
       el.modelStatus.className = "pill pill-loading";
@@ -176,14 +191,8 @@ function switchView(view) {
   // The live MJPEG connection stays open as long as the <img> has a src,
   // even while its view is hidden — stop it when navigating away, and
   // resume it when coming back to Chat with a camera already selected.
-  if (view === "chat" && activeCameraId) {
-    if (!el.viewerStream.src) {
-      selectCamera(activeCameraId);
-    }
-  } else {
-    el.viewerStream.removeAttribute("src");
-    el.viewerStream.classList.remove("visible");
-  }
+  el.viewerStream.removeAttribute("src");
+  el.viewerStream.classList.remove("visible");
 }
 
 /* ---------- data loading ---------- */
@@ -211,7 +220,7 @@ async function loadCameras() {
   } else if (activeCameraId) {
     const active = cameras.find(c => c.id === activeCameraId);
     document.getElementById("viewer-source-label").textContent = sourceLabel(active);
-    if (!active.online || (currentView === "chat" && !el.viewerStream.getAttribute("src"))) selectCamera(activeCameraId);
+    if (!active.online) selectCamera(activeCameraId);
   } else {
     el.viewerStream.removeAttribute("src");
     el.viewerStream.classList.remove("visible");
@@ -373,17 +382,8 @@ function selectCamera(camId) {
   el.viewerTitle.textContent = cam.name;
   el.viewerLocation.textContent = cam.location;
   document.getElementById("viewer-source-label").textContent = sourceLabel(cam);
-  if (currentView === "chat" && cam.online) {
-    el.viewerPlaceholder.textContent = "Connecting to source…";
-    el.viewerPlaceholder.style.display = "block";
-    el.viewerStream.classList.remove("visible");
-    el.viewerStream.src = `${API}/api/cameras/${camId}/stream`;
-  } else {
-    el.viewerStream.removeAttribute("src");
-    el.viewerStream.classList.remove("visible");
-    el.viewerPlaceholder.style.display = "block";
-    el.viewerPlaceholder.textContent = "Source offline. Check its connection in Cameras.";
-  }
+  el.viewerStream.removeAttribute("src");
+  el.viewerStream.classList.remove("visible");
 
   renderChatStrip();
 }
@@ -394,14 +394,16 @@ async function loadPrompts() {
   el.promptChips.innerHTML = "";
   el.searchChips.innerHTML = "";
   for (const p of prompts) {
-    const chip = document.createElement("button");
-    chip.className = "chip";
-    chip.textContent = p;
-    chip.onclick = () => {
-      el.chatInput.value = p;
-      el.chatForm.requestSubmit();
-    };
-    el.promptChips.appendChild(chip);
+    if (el.promptChips.childElementCount < 3) {
+      const chip = document.createElement("button");
+      chip.className = "chip";
+      chip.textContent = p;
+      chip.onclick = () => {
+        el.chatInput.value = p;
+        el.chatForm.requestSubmit();
+      };
+      el.promptChips.appendChild(chip);
+    }
 
     if (el.searchChips.childElementCount < 4) {
       const searchChip = document.createElement("button");
@@ -419,7 +421,8 @@ async function loadPrompts() {
 async function loadChatHistory() {
   try {
     if (chatBusy) return;
-    const res = await fetch(`${API}/api/chat/history`);
+    if (!activeChatSessionId) return;
+    const res = await fetch(`${API}/api/chat/history?session_id=${encodeURIComponent(activeChatSessionId)}`);
     if (!res.ok) return;
     const rows = await res.json();
     if (chatBusy) return;
@@ -438,14 +441,72 @@ async function loadChatHistory() {
   }
 }
 
+function renderChatSessions() {
+  const container = document.getElementById("chat-session-list");
+  container.innerHTML = chatSessions.map(session => `<div class="chat-session${session.id === activeChatSessionId ? " active" : ""}"><button data-session-id="${escapeHtml(session.id)}" title="${escapeHtml(session.title)}">${escapeHtml(session.title)}</button><button data-delete-session="${escapeHtml(session.id)}" title="Delete conversation" aria-label="Delete ${escapeHtml(session.title)}">×</button></div>`).join("");
+}
+
+async function createChatSession() {
+  const res = await fetch(`${API}/api/chat/sessions`, {method:"POST"});
+  if (!res.ok) throw new Error("Could not create a conversation");
+  const session = await res.json();
+  chatSessions.unshift(session);
+  activeChatSessionId = session.id;
+  localStorage.setItem("argus-chat-session", session.id);
+  chatLog.length = 0;
+  renderChatSessions();
+  renderChat();
+  return session;
+}
+
+async function loadChatSessions() {
+  try {
+    const res = await fetch(`${API}/api/chat/sessions`);
+    if (!res.ok) throw new Error("Could not load conversations");
+    chatSessions = await res.json();
+    if (!chatSessions.length) await createChatSession();
+    if (!chatSessions.some(session => session.id === activeChatSessionId)) activeChatSessionId = chatSessions[0].id;
+    localStorage.setItem("argus-chat-session", activeChatSessionId);
+    renderChatSessions();
+    await loadChatHistory();
+  } catch (_) {
+    chatLog.length = 0;
+    renderChat();
+  }
+}
+
+document.getElementById("chat-session-list").addEventListener("click", async event => {
+  const deleteButton = event.target.closest("[data-delete-session]");
+  if (deleteButton) {
+    const id = deleteButton.dataset.deleteSession;
+    const res = await fetch(`${API}/api/chat/sessions/${encodeURIComponent(id)}`, {method:"DELETE"});
+    if (!res.ok) return;
+    chatSessions = chatSessions.filter(session => session.id !== id);
+    if (activeChatSessionId === id) {
+      if (!chatSessions.length) await createChatSession();
+      else { activeChatSessionId = chatSessions[0].id; localStorage.setItem("argus-chat-session", activeChatSessionId); await loadChatHistory(); }
+    }
+    renderChatSessions();
+    return;
+  }
+  const button = event.target.closest("[data-session-id]");
+  if (!button || chatBusy) return;
+  activeChatSessionId = button.dataset.sessionId;
+  localStorage.setItem("argus-chat-session", activeChatSessionId);
+  renderChatSessions();
+  await loadChatHistory();
+  switchView("chat");
+});
+
 function renderChat() {
   el.chatLog.innerHTML = "";
+  el.promptChips.hidden = chatLog.length > 0;
   if (chatLog.length === 0) {
-    el.chatLog.innerHTML = `<div class="chat-empty"><span class="empty-analyst">✳</span><strong>A second set of eyes.</strong><p>Ask what is happening, describe an object, or compare your cameras. Every visual answer includes the frame it used.</p></div>`;
+    el.chatLog.innerHTML = `<div class="chat-empty"><span class="empty-analyst">✳</span><strong>What should Argus handle?</strong><p>Investigate live cameras, search historical activity, verify evidence, check system health, or manage your monitoring workflow.</p><div class="agent-capability-row"><span>LIVE VISION</span><span>HISTORY</span><span>CPU</span><span>EVIDENCE</span></div></div>`;
     return;
   }
   for (const msg of chatLog) {
-    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot);
+    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot, msg.scope, msg.evidence);
   }
   el.chatLog.scrollTop = el.chatLog.scrollHeight;
 }
@@ -459,13 +520,20 @@ function camerasUsedLabel(camIds) {
   return names.length === 1 ? names[0] : names.join(", ");
 }
 
-function appendMessageEl(role, text, thinking, camerasUsed, snapshot) {
+function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evidence) {
   const bubble = document.createElement("div");
   bubble.className = `msg msg-${role}` + (thinking ? " thinking" : "");
 
   const body = document.createElement("div");
   body.textContent = text;
   bubble.appendChild(body);
+
+  if (role === "ai" && scope && !thinking) {
+    const tool = document.createElement("div");
+    tool.className = "msg-tool";
+    tool.textContent = ({camera_health: "CAMERA HEALTH", observations: "OBSERVATION SEARCH", verification: "VLM VERIFICATION", metadata: "CAMERA DIRECTORY", cpu: "CPU ANALYSIS", fleet: "LIVE FLEET", camera: "LIVE CAMERA"})[scope] || scope.replaceAll("_", " ").toUpperCase();
+    bubble.insertBefore(tool, body);
+  }
 
   // Show the frame the answer was actually based on, so the claim is
   // checkable rather than something the user has to take on faith.
@@ -479,6 +547,19 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot) {
     img.onclick = () => openEvidence(snapshot, camerasUsedLabel(camerasUsed) || "Analysis snapshot");
     img.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); img.click(); } };
     bubble.appendChild(img);
+  }
+
+  if (evidence?.length) {
+    const list = document.createElement("div");
+    list.className = "msg-evidence-list";
+    for (const item of evidence) {
+      const evidenceItem = document.createElement("span");
+      const time = item.timestamp ? new Date(item.timestamp).toLocaleString() : "Stored evidence";
+      evidenceItem.textContent = `${item.camera_name || item.camera_id} · ${time}`;
+      evidenceItem.title = `Observation ${item.observation_id || ""}`;
+      list.appendChild(evidenceItem);
+    }
+    bubble.appendChild(list);
   }
 
   const label = camerasUsedLabel(camerasUsed);
@@ -521,7 +602,7 @@ el.btnClearChat.addEventListener("click", async () => {
   if (chatBusy) return;
   if (chatLog.length && !confirm("Clear the whole conversation?")) return;
   try {
-    const res = await fetch(`${API}/api/chat/history`, { method: "DELETE" });
+    const res = await fetch(`${API}/api/chat/history?session_id=${encodeURIComponent(activeChatSessionId)}`, { method: "DELETE" });
     if (!res.ok) throw new Error("Could not clear conversation");
   } catch (e) {
     document.getElementById("chat-progress").hidden = false;
@@ -532,13 +613,27 @@ el.btnClearChat.addEventListener("click", async () => {
   renderChat();
 });
 
+document.getElementById("new-chat").addEventListener("click", async () => {
+  if (chatBusy) return;
+  try {
+    await createChatSession();
+    switchView("chat");
+    if (innerWidth < 700) setSidebarCollapsed(true);
+    el.chatInput.focus();
+  } catch (error) {
+    const progress = document.getElementById("chat-progress");
+    progress.hidden = false;
+    progress.textContent = "Could not start a new conversation. Please retry.";
+  }
+});
+
 let chatBusy = false;
 
 async function readChatStream(question, onEvent) {
   const res = await fetch(`${API}/api/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, focused_camera_id: activeCameraId,
+    body: JSON.stringify({ question, focused_camera_id: activeCameraId, session_id: activeChatSessionId,
       scope: document.getElementById("chat-scope").value }),
   });
   if (!res.ok) {
@@ -587,7 +682,7 @@ el.chatForm.addEventListener("submit", async (e) => {
   const updateProgress = () => progress.textContent = `${status} · ${Math.floor((Date.now() - started) / 1000)}s`;
   updateProgress();
   const timer = setInterval(updateProgress, 1000);
-  const bubble = appendMessageEl("ai", "Looking at your cameras…", true);
+  const bubble = appendMessageEl("ai", "Planning tools and gathering evidence…", true);
   try {
     const data = await readChatStream(question, (type, data) => {
       if (type === "status") status = data.text;
@@ -599,8 +694,9 @@ el.chatForm.addEventListener("submit", async (e) => {
         el.chatLog.scrollTop = el.chatLog.scrollHeight;
       }
     });
-    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot });
-    progress.textContent = `Answer complete · ${data.elapsed_seconds}s · ${data.snapshot ? "Evidence attached" : "Camera metadata"}`;
+    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot, scope: data.scope, evidence: data.evidence });
+    const resultType = data.evidence?.length ? `${data.evidence.length} evidence item${data.evidence.length === 1 ? "" : "s"}` : data.snapshot ? "Evidence attached" : (data.scope || "Completed");
+    progress.textContent = `Agent complete · ${data.elapsed_seconds}s · ${resultType}`;
   } catch (err) {
     chatLog.push({ role: "ai", text: err.message || "Could not reach the analysis server." });
     el.chatInput.value = question;
@@ -1589,7 +1685,7 @@ loadPrompts();
 renderChat();
 renderRecentQueries();
 renderStatRow();
-loadChatHistory();
+loadChatSessions();
 pollRecentEvents();
 
 // Deep-linkable views, e.g. sentinelvision/?view=alerts — lets a specific

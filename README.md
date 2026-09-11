@@ -1,7 +1,10 @@
 # Argus — video intelligence MVP
 
-A camera workspace with an overview, live video analyst, saved visual evidence,
-activity feed, watch rules, source management, and hardware-aware AI setup.
+Argus Agent is the primary interface and default landing page. Its conversation
+routes operational questions through camera health, CPU analysis, structured
+observations, historical evidence, selective VLM verification, and live camera
+tools. The dashboard, activity, rules, cameras, health, CPU tools, and AI setup
+remain available as focused controls in the sidebar.
 
 The included sources are **looping demo video files**, clearly labeled in the UI.
 Visual answers come from the configured model, never canned demo responses.
@@ -222,3 +225,21 @@ ARGUS_URL=http://127.0.0.1:8090 npm run test:ui
   retention, incident acknowledgement and notification delivery are subsequent milestones.
 - Configuration supports one active provider; automatic routing, cost quotas,
   heterogeneous device scheduling and production secrets management are future work.
+# Argus vision agent
+
+Argus uses two separate model roles. A text instruction model plans work and
+calls camera tools; the configured vision model inspects selected frames. The
+agent does not require the two roles to use the same provider or machine.
+
+For a local Ollama planner, install a tool-capable instruction model and set:
+
+```bash
+ollama pull qwen3:4b
+ARGUS_AGENT_BASE_URL=http://host.docker.internal:11435/v1
+ARGUS_AGENT_MODEL=qwen3:4b
+```
+
+`ARGUS_AGENT_BASE_URL` may instead point to any OpenAI-compatible endpoint.
+When it is unset or unreachable, Argus keeps camera viewing and deterministic
+queries available. `GET /api/agent/status` reports configuration and
+`POST /api/agent/test` verifies the planner endpoint.

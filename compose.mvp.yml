@@ -13,6 +13,10 @@ services:
       ARGUS_VECTOR_BACKEND: ${ARGUS_VECTOR_BACKEND:-json}
       ARGUS_VISUAL_EMBEDDING_PROVIDER: ${ARGUS_VISUAL_EMBEDDING_PROVIDER:-opencv}
       ARGUS_SEMANTIC_MODEL: ${ARGUS_SEMANTIC_MODEL:-openai/clip-vit-base-patch32}
+      ARGUS_AGENT_BASE_URL: ${ARGUS_AGENT_BASE_URL:-}
+      ARGUS_AGENT_MODEL: ${ARGUS_AGENT_MODEL:-}
+      ARGUS_AGENT_API_KEY: ${ARGUS_AGENT_API_KEY:-}
+      ARGUS_AGENT_MAX_STEPS: ${ARGUS_AGENT_MAX_STEPS:-8}
     volumes:
       - argus_settings:/app/backend/data
       - argus_videos:/app/videos

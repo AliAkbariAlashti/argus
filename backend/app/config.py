@@ -114,3 +114,12 @@ MONITOR_MOTION_THRESHOLD = float(os.environ.get("MONITOR_MOTION_THRESHOLD", "0.0
 MONITOR_MIN_VLM_INTERVAL_SECONDS = float(
     os.environ.get("MONITOR_MIN_VLM_INTERVAL_SECONDS", "20.0")
 )
+
+# Text instruction model used as the Argus agent's planner. This is separate
+# from the vision model: the planner chooses tools and composes answers while
+# the VLM is called only when a tool needs to inspect pixels.
+AGENT_BASE_URL = os.environ.get("ARGUS_AGENT_BASE_URL", "").rstrip("/")
+AGENT_MODEL = os.environ.get("ARGUS_AGENT_MODEL", "")
+AGENT_API_KEY = os.environ.get("ARGUS_AGENT_API_KEY", "")
+AGENT_MAX_STEPS = max(1, min(int(os.environ.get("ARGUS_AGENT_MAX_STEPS", "8")), 16))
+AGENT_TIMEOUT_SECONDS = max(5, int(os.environ.get("ARGUS_AGENT_TIMEOUT_SECONDS", "90")))

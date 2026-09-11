@@ -21,6 +21,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .camera import registry
+from .agent import answer_health_question
+from .agent_runtime import AgentUnavailable, agent_runtime
 from .cpu import CpuSettings, cpu_monitor, events_csv, health as cpu_health
 from .config import (
     CHAT_FRAMES_SINGLE_CAMERA,
@@ -41,7 +43,7 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AlertRule, Camera, CameraLink, ChatMessage, EntityAssociation, Event, Observation, CpuConfig
+from .models import AlertRule, Camera, CameraLink, ChatMessage, ChatSession, EntityAssociation, Event, Observation, CpuConfig
 from .entity_matching import decide_association, suggest_matches
 from .observation_query import answer_observation_question
 from .visual_search import find_by_text, find_similar, initialize_vector_backend, provider_status, vector_backend_status
@@ -98,8 +100,21 @@ def _add_event_confidence_column():
             conn.execute(text("ALTER TABLE events ADD COLUMN confidence INTEGER"))
 
 
+def _add_chat_session_column():
+    with engine.begin() as conn:
+        existing = {row[0] for row in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'chat_messages'"
+        ))}
+        if existing and "session_id" not in existing:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN session_id VARCHAR(32)"))
+            conn.execute(text("INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES ('legacy', 'Previous conversation', NOW(), NOW()) ON CONFLICT (id) DO NOTHING"))
+            conn.execute(text("UPDATE chat_messages SET session_id = 'legacy' WHERE session_id IS NULL"))
+            conn.execute(text("ALTER TABLE chat_messages ALTER COLUMN session_id SET NOT NULL"))
+
+
 def _seed_and_start_cameras():
     Base.metadata.create_all(bind=engine)
+    _add_chat_session_column()
     initialize_vector_backend(engine)
     _add_alert_rule_columns()
     _add_event_confidence_column()
@@ -717,10 +732,11 @@ def _frame_sequence_to_images(cam_id: str, count: int):
     return [frame_to_pil(f) for f in feed.get_frame_sequence(count)]
 
 
-def _recent_history(db: Session) -> list[dict]:
+def _recent_history(db: Session, session_id: str) -> list[dict]:
     """Prior turns, oldest first, for replay as model context."""
     rows = (
         db.query(ChatMessage)
+        .filter(ChatMessage.session_id == session_id)
         .order_by(ChatMessage.id.desc())
         .limit(CHAT_HISTORY_TURNS)
         .all()
@@ -728,9 +744,10 @@ def _recent_history(db: Session) -> list[dict]:
     return [{"role": r.role, "text": r.text} for r in reversed(rows)]
 
 
-def _save_turn(db: Session, role: str, text: str, cameras_used=None, snapshot=None):
+def _save_turn(db: Session, session_id: str, role: str, text: str, cameras_used=None, snapshot=None):
     msg = ChatMessage(
         role=role,
+        session_id=session_id,
         text=text,
         cameras_used=cameras_used or [],
         snapshot=snapshot,
@@ -738,6 +755,12 @@ def _save_turn(db: Session, role: str, text: str, cameras_used=None, snapshot=No
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    session = db.get(ChatSession, session_id)
+    if session:
+        session.updated_at = datetime.now(timezone.utc)
+        if role == "user" and session.title == "New chat":
+            session.title = text.strip()[:80] or "New chat"
+        db.commit()
     return msg
 
 
@@ -745,6 +768,7 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     scope: str = Field(default="auto", pattern="^(auto|camera|fleet|cpu)$")
     focused_camera_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class CameraLinkRequest(BaseModel):
@@ -829,27 +853,69 @@ def set_entity_match_decision(association_id: str, req: AssociationDecision, db:
         raise HTTPException(409, str(exc)) from None
 
 
+@app.get("/api/chat/sessions")
+def list_chat_sessions(db: Session = Depends(get_db)):
+    return [row.to_dict() for row in db.query(ChatSession).order_by(ChatSession.updated_at.desc()).all()]
+
+
+@app.post("/api/chat/sessions")
+def create_chat_session(db: Session = Depends(get_db)):
+    row = ChatSession()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row.to_dict()
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+def delete_chat_session(session_id: str, db: Session = Depends(get_db)):
+    if not _chat_lock.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the current answer before deleting a conversation.")
+    try:
+        row = db.get(ChatSession, session_id)
+        if row is None:
+            raise HTTPException(404, "Conversation not found.")
+        db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
+        db.delete(row)
+        db.commit()
+        return {"deleted": session_id}
+    finally:
+        _chat_lock.release()
+
+
 @app.get("/api/chat/history")
-def chat_history(db: Session = Depends(get_db)):
-    rows = db.query(ChatMessage).order_by(ChatMessage.id).all()
+def chat_history(session_id: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(ChatMessage)
+    if session_id:
+        query = query.filter(ChatMessage.session_id == session_id)
+    rows = query.order_by(ChatMessage.id).all()
     return [r.to_dict() for r in rows]
 
 
 @app.delete("/api/chat/history")
-def clear_chat_history(db: Session = Depends(get_db)):
+def clear_chat_history(session_id: Optional[str] = None, db: Session = Depends(get_db)):
     if not _chat_lock.acquire(blocking=False):
         raise HTTPException(409, "Wait for the current answer before clearing the conversation.")
     try:
-        deleted = db.query(ChatMessage).delete()
+        query = db.query(ChatMessage)
+        if session_id:
+            query = query.filter(ChatMessage.session_id == session_id)
+        deleted = query.delete()
         db.commit()
         return {"deleted": deleted}
     finally:
         _chat_lock.release()
 
 
-def _answer_chat(req: ChatRequest, db: Session, on_token=None):
+def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Please enter a question.")
+    session = db.get(ChatSession, req.session_id) if req.session_id else None
+    if session is None:
+        session = ChatSession()
+        db.add(session)
+        db.commit()
+        db.refresh(session)
     all_cameras = db.query(Camera).order_by(Camera.created_at).all()
     if not all_cameras:
         raise HTTPException(status_code=400, detail="No cameras configured yet.")
@@ -881,8 +947,8 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
         lines.append("These measurements do not identify people, objects, or behaviour. Choose a vision-model mode for scene descriptions.")
         answer = "\n\n".join(lines)
         used = [c.id for c in selected]
-        _save_turn(db, "user", req.question)
-        _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
+        _save_turn(db, session.id, "user", req.question)
+        _save_turn(db, session.id, "assistant", answer, cameras_used=used, snapshot=snapshot)
         return {"question": req.question, "answer": answer, "scope": "cpu", "cameras_used": used, "snapshot": snapshot}
 
     forced_camera_id = None
@@ -892,20 +958,42 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
             raise HTTPException(status_code=400, detail="Select a camera first.")
         if focused_camera is not None:
             forced_camera_id = focused_camera.id
+    if agent_runtime.configured and req.scope != "cpu":
+        try:
+            result = agent_runtime.answer(
+                req.question, _recent_history(db, session.id), db, registry, cpu_monitor, vlm,
+                on_status=on_status,
+            )
+            _save_turn(db, session.id, "user", req.question)
+            _save_turn(db, session.id, "assistant", result["answer"], cameras_used=result["cameras_used"], snapshot=result["snapshot"])
+            return {"question": req.question, "scope": "agent", **result}
+        except AgentUnavailable as exc:
+            log.warning("Agent planner unavailable; using deterministic fallback: %s", exc)
+    health_answer = answer_health_question(
+        db, req.question, all_cameras, registry, cpu_monitor, vlm, forced_camera_id,
+    )
+    if health_answer is not None:
+        _save_turn(db, session.id, "user", req.question)
+        _save_turn(db, session.id, "assistant", health_answer["answer"], cameras_used=health_answer["cameras_used"])
+        return {
+            "question": req.question, "answer": health_answer["answer"], "scope": "camera_health",
+            "cameras_used": health_answer["cameras_used"], "snapshot": None,
+            "query_plan": health_answer["plan"], "tool_result": health_answer["details"],
+        }
     if wants_verification(req.question):
         plan, candidates = select_candidates(db, req.question, all_cameras, forced_camera_id)
         if plan is not None:
             if not candidates:
                 answer = "No stored evidence frames matched this verification request."
-                _save_turn(db, "user", req.question)
-                _save_turn(db, "assistant", answer)
+                _save_turn(db, session.id, "user", req.question)
+                _save_turn(db, session.id, "assistant", answer)
                 return {"question": req.question, "answer": answer, "scope": "verification", "cameras_used": [], "evidence": [], "query_plan": plan}
             if not vlm.ready:
                 raise HTTPException(503, vlm.error or "Test a vision model in AI setup before verifying stored evidence.")
             camera_names = {camera.id: camera.name for camera in all_cameras}
             prompt = verification_prompt(req.question, candidates, camera_names)
             images = [image for _, image in candidates]
-            answer = vlm.ask(images, prompt, max_new_tokens=512, history=_recent_history(db), on_token=on_token)
+            answer = vlm.ask(images, prompt, max_new_tokens=512, history=_recent_history(db, session.id), on_token=on_token)
             evidence = [
                 {"observation_id": row.id, "event_id": row.event_id, "camera_id": row.camera_id,
                  "camera_name": camera_names.get(row.camera_id, row.camera_id), "timestamp": row.to_dict()["observed_at"]}
@@ -913,15 +1001,15 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
             ]
             used = list(dict.fromkeys(item["camera_id"] for item in evidence))
             snapshot = image_to_data_uri(images[0])
-            _save_turn(db, "user", req.question)
-            _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
+            _save_turn(db, session.id, "user", req.question)
+            _save_turn(db, session.id, "assistant", answer, cameras_used=used, snapshot=snapshot)
             return {"question": req.question, "answer": answer, "scope": "verification", "cameras_used": used,
                     "snapshot": snapshot, "evidence": evidence, "query_plan": plan}
     observation_answer = answer_observation_question(db, req.question, all_cameras, forced_camera_id)
     if observation_answer is not None:
-        _save_turn(db, "user", req.question)
+        _save_turn(db, session.id, "user", req.question)
         _save_turn(
-            db, "assistant", observation_answer["answer"],
+            db, session.id, "assistant", observation_answer["answer"],
             cameras_used=observation_answer["cameras_used"], snapshot=observation_answer["snapshot"],
         )
         return {
@@ -933,7 +1021,7 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
             "query_plan": observation_answer["plan"],
         }
 
-    history = _recent_history(db)
+    history = _recent_history(db, session.id)
 
     scope, camera = route_question(req.question, all_cameras, req.focused_camera_id)
     if req.scope == "fleet" and scope != "metadata":
@@ -951,8 +1039,8 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
         camera_dicts = [_camera_out(c) for c in all_cameras]
         answer = metadata_answer(req.question, camera_dicts)
         used = [c["id"] for c in camera_dicts]
-        _save_turn(db, "user", req.question)
-        _save_turn(db, "assistant", answer, cameras_used=used)
+        _save_turn(db, session.id, "user", req.question)
+        _save_turn(db, session.id, "assistant", answer, cameras_used=used)
         return {
             "question": req.question,
             "answer": answer,
@@ -998,8 +1086,8 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
 
         used = [c.id for c in used_cameras]
         snapshot = image_to_data_uri(images[snapshot_index])
-        _save_turn(db, "user", req.question)
-        _save_turn(db, "assistant", answer, cameras_used=used, snapshot=snapshot)
+        _save_turn(db, session.id, "user", req.question)
+        _save_turn(db, session.id, "assistant", answer, cameras_used=used, snapshot=snapshot)
         return {
             "question": req.question,
             "answer": answer,
@@ -1028,8 +1116,8 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
         raise HTTPException(status_code=500, detail=str(exc))
 
     snapshot = image_to_data_uri(images[-1])
-    _save_turn(db, "user", req.question)
-    _save_turn(db, "assistant", answer, cameras_used=[camera.id], snapshot=snapshot)
+    _save_turn(db, session.id, "user", req.question)
+    _save_turn(db, session.id, "assistant", answer, cameras_used=[camera.id], snapshot=snapshot)
     return {
         "question": req.question,
         "answer": answer,
@@ -1042,6 +1130,20 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None):
 # One conversation and one GPU: reject overlapping questions instead of
 # silently building an unbounded queue or interleaving conversation turns.
 _chat_lock = threading.Lock()
+
+
+@app.get("/api/agent/status")
+def agent_status():
+    return agent_runtime.public_status()
+
+
+@app.post("/api/agent/test")
+def test_agent():
+    try:
+        message = agent_runtime._complete([{"role": "user", "content": "Reply with exactly: ready"}])
+        return {**agent_runtime.public_status(), "ready": bool(message.get("content") or message.get("tool_calls"))}
+    except AgentUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
 
 
 @app.post("/api/chat")
@@ -1073,7 +1175,11 @@ async def stream_chat(req: ChatRequest):
         started = time.monotonic()
         try:
             with SessionLocal() as db:
-                result = _answer_chat(req, db, on_token=lambda token: emit("token", {"text": token}))
+                result = _answer_chat(
+                    req, db,
+                    on_token=lambda token: emit("token", {"text": token}),
+                    on_status=lambda status: emit("status", {"text": status}),
+                )
             result["elapsed_seconds"] = round(time.monotonic() - started, 1)
             emit("answer", result)
         except HTTPException as exc:
