@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from sqlalchemy import func
 
 from .config import AGENT_API_KEY, AGENT_BASE_URL, AGENT_MAX_STEPS, AGENT_MODEL, AGENT_TIMEOUT_SECONDS
 from .cpu import CpuSettings
@@ -21,6 +22,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "get_camera_health", "description": "Get live stream and CPU-analysis health for all cameras or selected camera IDs.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "search_observations", "description": "Search structured detections, line crossings, dwell records, actions, zones, and tracks.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}, "object_type": {"type": "string"}, "kind": {"type": "string", "enum": ["object_detection", "line_crossing", "dwell"]}, "zone": {"type": "string"}, "action": {"type": "string"}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 10080}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "search_events", "description": "Search operator-facing activity events and alerts.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}, "category": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 10080}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_activity_report", "description": "Return exact grouped counts of observations and events for a time window.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 10080}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_track_timeline", "description": "Get the chronological observation timeline for one track or confirmed cross-camera entity.", "parameters": {"type": "object", "properties": {"track_id": {"type": "string"}, "global_entity_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "anyOf": [{"required": ["track_id"]}, {"required": ["global_entity_id"]}], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "inspect_live_cameras", "description": "Ask the vision model to inspect current frames. Use only when pixels must be examined, after identifying relevant cameras.", "parameters": {"type": "object", "required": ["camera_ids", "question"], "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
 ]
 
@@ -109,6 +112,27 @@ class AgentRuntime:
                 item["snapshot"] = "available" if item.get("snapshot") else None
                 data.append(item)
             return {"count": len(rows), "events": data}, list(dict.fromkeys(row.camera_id for row in rows)), rows[0].snapshot if rows else None
+        if name == "get_activity_report":
+            since = datetime.now(timezone.utc) - timedelta(minutes=args.get("since_minutes", 1440))
+            observation_query = db.query(Observation.kind, func.count(Observation.id)).filter(Observation.observed_at >= since)
+            event_query = db.query(Event.severity, func.count(Event.id)).filter(Event.created_at >= since)
+            if requested:
+                observation_query = observation_query.filter(Observation.camera_id.in_(requested))
+                event_query = event_query.filter(Event.camera_id.in_(requested))
+            observation_counts = dict(observation_query.group_by(Observation.kind).all())
+            event_counts = dict(event_query.group_by(Event.severity).all())
+            return {"since": since.isoformat(), "observation_counts": observation_counts, "event_counts": event_counts,
+                    "total_observations": sum(observation_counts.values()), "total_events": sum(event_counts.values())}, [camera.id for camera in selected], None
+        if name == "get_track_timeline":
+            query = db.query(Observation)
+            if args.get("global_entity_id"):
+                query = query.filter(Observation.global_entity_id == args["global_entity_id"])
+            elif args.get("track_id"):
+                query = query.filter(Observation.track_id == args["track_id"])
+            else:
+                return {"error": "Provide track_id or global_entity_id."}, [], None
+            rows = query.order_by(Observation.observed_at).limit(min(args.get("limit", 100), 200)).all()
+            return {"count": len(rows), "timeline": [row.to_dict() for row in rows]}, list(dict.fromkeys(row.camera_id for row in rows)), None
         if name == "inspect_live_cameras":
             if not vlm.ready:
                 return {"error": vlm.error or "Vision model is not ready."}, [], None
