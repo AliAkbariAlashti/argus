@@ -6,6 +6,10 @@ import pytest
 from app.agent_runtime import AgentRuntime, AgentUnavailable
 
 
+def fake_db():
+    return SimpleNamespace(add=lambda row: None, commit=lambda: None)
+
+
 def test_unconfigured_agent_is_unavailable():
     runtime = AgentRuntime(base_url="", model="")
     assert runtime.public_status()["configured"] is False
@@ -29,7 +33,7 @@ def test_agent_runs_multiple_tools_then_answers(monkeypatch):
 
     monkeypatch.setattr(runtime, "_run_tool", fake_tool)
     statuses = []
-    result = runtime.answer("Is Camera One online?", [], object(), object(), object(), object(), statuses.append)
+    result = runtime.answer("Is Camera One online?", [], fake_db(), object(), object(), object(), statuses.append)
     assert result["answer"] == "Camera One is online."
     assert result["cameras_used"] == ["cam-1"]
     assert [name for name, _ in calls] == ["list_cameras", "get_camera_health"]
@@ -42,7 +46,7 @@ def test_agent_stops_at_step_limit(monkeypatch):
     monkeypatch.setattr(runtime, "_complete", lambda messages: {"role": "assistant", "tool_calls": [{"id": "x", "function": {"name": "unknown", "arguments": "{}"}}]})
     monkeypatch.setattr(runtime, "_run_tool", lambda *args: ({"error": "unknown"}, [], None))
     with pytest.raises(AgentUnavailable, match="2-step limit"):
-        runtime.answer("keep going", [], object(), object(), object(), object())
+        runtime.answer("keep going", [], fake_db(), object(), object(), object())
 
 
 def test_agent_accepts_invalid_tool_arguments_without_crashing(monkeypatch):
@@ -54,6 +58,6 @@ def test_agent_accepts_invalid_tool_arguments_without_crashing(monkeypatch):
     monkeypatch.setattr(runtime, "_complete", lambda messages: next(replies))
     seen = []
     monkeypatch.setattr(runtime, "_run_tool", lambda name, args, *rest: (seen.append(args) or {"error": "unknown"}, [], None))
-    result = runtime.answer("test", [], object(), object(), object(), SimpleNamespace())
+    result = runtime.answer("test", [], fake_db(), object(), object(), SimpleNamespace())
     assert seen == [{}]
     assert result["answer"] == "I could not run that tool."

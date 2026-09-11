@@ -88,6 +88,28 @@ class ChatMessage(Base):
         }
 
 
+class AgentToolRun(Base):
+    """Audit record for each model-selected Argus tool invocation."""
+
+    __tablename__ = "agent_tool_runs"
+    __table_args__ = (Index("ix_agent_tool_runs_session_time", "session_id", "created_at"),)
+
+    id = Column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    session_id = Column(String(32), nullable=False)
+    step = Column(Integer, nullable=False)
+    tool = Column(String(80), nullable=False)
+    arguments = Column(JSON, nullable=False, default=dict)
+    result = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="completed")
+    duration_ms = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {"id": self.id, "session_id": self.session_id, "step": self.step, "tool": self.tool,
+                "arguments": self.arguments or {}, "result": self.result or {}, "status": self.status,
+                "duration_ms": self.duration_ms, "created_at": _utc_iso(self.created_at)}
+
+
 class Event(Base):
     """A system-detected occurrence — from the background VLM monitor or CPU
     tools' own detectors (motion, face, people, object). This is the single,

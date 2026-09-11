@@ -43,7 +43,7 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AlertRule, Camera, CameraLink, ChatMessage, ChatSession, EntityAssociation, Event, Observation, CpuConfig
+from .models import AgentToolRun, AlertRule, Camera, CameraLink, ChatMessage, ChatSession, EntityAssociation, Event, Observation, CpuConfig
 from .entity_matching import decide_association, suggest_matches
 from .observation_query import answer_observation_question
 from .visual_search import find_by_text, find_similar, initialize_vector_backend, provider_status, vector_backend_status
@@ -962,7 +962,7 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
         try:
             result = agent_runtime.answer(
                 req.question, _recent_history(db, session.id), db, registry, cpu_monitor, vlm,
-                on_status=on_status,
+                on_status=on_status, session_id=session.id,
             )
             _save_turn(db, session.id, "user", req.question)
             _save_turn(db, session.id, "assistant", result["answer"], cameras_used=result["cameras_used"], snapshot=result["snapshot"])
@@ -1135,6 +1135,15 @@ _chat_lock = threading.Lock()
 @app.get("/api/agent/status")
 def agent_status():
     return agent_runtime.public_status()
+
+
+@app.get("/api/agent/tool-runs")
+def agent_tool_runs(session_id: Optional[str] = None, limit: int = 100, db: Session = Depends(get_db)):
+    query = db.query(AgentToolRun)
+    if session_id:
+        query = query.filter(AgentToolRun.session_id == session_id)
+    rows = query.order_by(AgentToolRun.created_at.desc()).limit(max(1, min(limit, 500))).all()
+    return [row.to_dict() for row in rows]
 
 
 @app.post("/api/agent/test")

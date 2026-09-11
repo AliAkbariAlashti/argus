@@ -1,6 +1,7 @@
 """Bounded, model-driven Argus agent with typed operational tools."""
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -8,7 +9,7 @@ import httpx
 from .config import AGENT_API_KEY, AGENT_BASE_URL, AGENT_MAX_STEPS, AGENT_MODEL, AGENT_TIMEOUT_SECONDS
 from .cpu import CpuSettings
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import Camera, CpuConfig, Event, Observation
+from .models import AgentToolRun, Camera, CpuConfig, Event, Observation
 
 log = logging.getLogger("qwenvl.agent_runtime")
 
@@ -124,7 +125,7 @@ class AgentRuntime:
             return {"answer": answer, "camera_ids": used, "camera_names": labels, "observed_at": datetime.now(timezone.utc).isoformat()}, used, image_to_data_uri(images[0])
         return {"error": f"Unknown tool: {name}"}, [], None
 
-    def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None):
+    def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, session_id="unsaved"):
         messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=datetime.now(timezone.utc).isoformat())}]
         messages.extend({"role": item["role"], "content": item["text"]} for item in history)
         messages.append({"role": "user", "content": question})
@@ -146,7 +147,18 @@ class AgentRuntime:
                 if not isinstance(args, dict):
                     args = {}
                 if on_status: on_status(f"Using {name.replace('_', ' ')}…")
-                result, used, evidence = self._run_tool(name, args, db, registry, cpu_monitor, vlm)
+                started = time.monotonic()
+                status = "completed"
+                try:
+                    result, used, evidence = self._run_tool(name, args, db, registry, cpu_monitor, vlm)
+                    if result.get("error"):
+                        status = "error"
+                except Exception as exc:  # keep one failed tool from destroying the conversation
+                    log.exception("Agent tool %s failed", name)
+                    result, used, evidence, status = {"error": str(exc)}, [], None, "error"
+                db.add(AgentToolRun(session_id=session_id, step=step + 1, tool=name or "unknown", arguments=args,
+                                    result=result, status=status, duration_ms=round((time.monotonic() - started) * 1000)))
+                db.commit()
                 trace.append({"tool": name, "arguments": args, "result": result})
                 cameras_used.extend(used)
                 snapshot = snapshot or evidence
