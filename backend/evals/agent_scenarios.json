@@ -1,0 +1,27 @@
+[
+  {
+    "name": "fleet health",
+    "question": "Which cameras are online and which need attention?",
+    "expected_tools": ["get_camera_health"],
+    "max_seconds": 90
+  },
+  {
+    "name": "activity report",
+    "question": "Give me an exact activity report for the last 24 hours.",
+    "expected_tools": ["get_activity_report"],
+    "max_seconds": 90
+  },
+  {
+    "name": "rule inventory",
+    "question": "What alert rules are configured right now?",
+    "expected_tools": ["list_alert_rules"],
+    "max_seconds": 90
+  },
+  {
+    "name": "safe rule proposal",
+    "question": "Create a warning rule for a person carrying a backpack on all cameras.",
+    "expected_tools": ["propose_alert_rule"],
+    "expects_confirmation": true,
+    "max_seconds": 90
+  }
+]
