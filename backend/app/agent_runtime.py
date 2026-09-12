@@ -31,11 +31,16 @@ TOOLS = [
     {"type": "function", "function": {"name": "search_visual_description", "description": "Semantic search for a visual description across stored observation embeddings. Availability depends on the configured embedding provider.", "parameters": {"type": "object", "required": ["description"], "properties": {"description": {"type": "string"}, "camera_id": {"type": "string"}, "object_type": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "suggest_cross_camera_matches", "description": "Find likely continuations of a tracked observation in connected cameras using appearance and travel-time constraints.", "parameters": {"type": "object", "required": ["observation_id"], "properties": {"observation_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "list_alert_rules", "description": "List alert rules and whether they are enabled.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "list_ai_setups", "description": "List saved vision-model setups and their active/readiness state.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "get_cpu_configuration", "description": "Read CPU-tool settings for selected or all cameras.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_alert_rule", "description": "Prepare an alert rule for operator confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["target"], "properties": {"camera_id": {"type": "string"}, "source": {"type": "string", "enum": ["cpu", "vlm"]}, "target": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_update_alert_rule", "description": "Prepare enabling, disabling, or changing severity of an alert rule for confirmation.", "parameters": {"type": "object", "required": ["rule_id"], "properties": {"rule_id": {"type": "string"}, "enabled": {"type": "boolean"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_delete_alert_rule", "description": "Prepare deleting an alert rule for confirmation.", "parameters": {"type": "object", "required": ["rule_id"], "properties": {"rule_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_cpu_configuration", "description": "Prepare a partial CPU-tool configuration change for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["camera_id", "settings"], "properties": {"camera_id": {"type": "string"}, "settings": {"type": "object", "properties": {"enabled": {"type": "boolean"}, "motion_alerts": {"type": "boolean"}, "quality_alerts": {"type": "boolean"}, "object_alerts": {"type": "boolean"}, "tracking_enabled": {"type": "boolean"}, "line_crossing_alerts": {"type": "boolean"}, "dwell_alerts": {"type": "boolean"}, "dwell_seconds": {"type": "integer", "minimum": 10, "maximum": 86400}, "object_confidence": {"type": "number", "minimum": 0.1, "maximum": 0.95}}, "additionalProperties": False}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_rtsp_camera", "description": "Prepare adding an RTSP camera for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["name", "rtsp_url"], "properties": {"name": {"type": "string"}, "rtsp_url": {"type": "string"}, "location": {"type": "string"}, "zone_tags": {"type": "array", "items": {"type": "string"}}, "description": {"type": "string"}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_update_rtsp_camera", "description": "Prepare changing an RTSP camera name, location, tags, description, or URL for confirmation.", "parameters": {"type": "object", "required": ["camera_id"], "properties": {"camera_id": {"type": "string"}, "name": {"type": "string"}, "rtsp_url": {"type": "string"}, "location": {"type": "string"}, "zone_tags": {"type": "array", "items": {"type": "string"}}, "description": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_delete_camera", "description": "Prepare deleting an RTSP camera for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["camera_id"], "properties": {"camera_id": {"type": "string"}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_activate_ai_setup", "description": "Prepare activating a saved vision-model setup for confirmation.", "parameters": {"type": "object", "required": ["profile_id"], "properties": {"profile_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "inspect_live_cameras", "description": "Ask the vision model to inspect current frames. Use only when pixels must be examined, after identifying relevant cameras.", "parameters": {"type": "object", "required": ["camera_ids", "question"], "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
 ]
 
@@ -185,6 +190,8 @@ class AgentRuntime:
         if name == "list_alert_rules":
             rows = db.query(AlertRule).order_by(AlertRule.created_at).all()
             return {"rules": [row.to_dict() for row in rows]}, list(dict.fromkeys(row.camera_id for row in rows if row.camera_id)), None
+        if name == "list_ai_setups":
+            return {"profiles": vlm.public_profiles(), "active": vlm.public_settings()}, [], None
         if name == "get_cpu_configuration":
             data = []
             for camera in selected:
@@ -193,9 +200,13 @@ class AgentRuntime:
             return {"cameras": data}, [camera.id for camera in selected], None
         proposal_map = {
             "propose_alert_rule": ("create_alert_rule", f"Create {args.get('source', 'vlm')} alert for {args.get('target', '')}"),
+            "propose_update_alert_rule": ("update_alert_rule", f"Change alert rule {args.get('rule_id', '')}"),
+            "propose_delete_alert_rule": ("delete_alert_rule", f"Delete alert rule {args.get('rule_id', '')}"),
             "propose_cpu_configuration": ("configure_cpu", f"Change CPU tools for {by_id.get(args.get('camera_id')).name if by_id.get(args.get('camera_id')) else args.get('camera_id', '')}"),
             "propose_rtsp_camera": ("add_rtsp_camera", f"Add RTSP camera {args.get('name', '')}"),
+            "propose_update_rtsp_camera": ("update_rtsp_camera", f"Change camera {by_id.get(args.get('camera_id')).name if by_id.get(args.get('camera_id')) else args.get('camera_id', '')}"),
             "propose_delete_camera": ("delete_camera", f"Delete camera {by_id.get(args.get('camera_id')).name if by_id.get(args.get('camera_id')) else args.get('camera_id', '')}"),
+            "propose_activate_ai_setup": ("activate_ai_profile", f"Activate AI setup {args.get('profile_id', '')}"),
         }
         if name in proposal_map:
             action, summary = proposal_map[name]

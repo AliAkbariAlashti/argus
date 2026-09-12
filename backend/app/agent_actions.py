@@ -7,7 +7,7 @@ from .models import AgentAction, AlertRule, Camera, CpuConfig
 from . import yolo
 
 
-ACTION_NAMES = {"create_alert_rule", "configure_cpu", "add_rtsp_camera", "delete_camera"}
+ACTION_NAMES = {"create_alert_rule", "update_alert_rule", "delete_alert_rule", "configure_cpu", "add_rtsp_camera", "update_rtsp_camera", "delete_camera", "activate_ai_profile"}
 
 
 def create_proposal(db, session_id, action, arguments, summary):
@@ -26,7 +26,7 @@ def _valid_rtsp(value):
         return False
 
 
-def decide_action(db, row, decision, registry, cpu_monitor):
+def decide_action(db, row, decision, registry, cpu_monitor, vlm=None):
     if row.status != "pending":
         return row  # idempotent retries return the original decision/result
     if decision == "reject":
@@ -47,6 +47,19 @@ def decide_action(db, row, decision, registry, cpu_monitor):
             if severity not in ("info", "warning", "critical"): raise ValueError("Invalid severity.")
             created = AlertRule(camera_id=camera_id, source=source, target=target, severity=severity)
             db.add(created); db.flush(); result = created.to_dict()
+        elif row.action == "update_alert_rule":
+            rule = db.get(AlertRule, args.get("rule_id"))
+            if rule is None: raise ValueError("Alert rule no longer exists.")
+            if "enabled" in args: rule.enabled = bool(args["enabled"])
+            if "severity" in args:
+                if rule.source != "cpu": raise ValueError("Only CPU rules have adjustable severity.")
+                if args["severity"] not in ("info", "warning", "critical"): raise ValueError("Invalid severity.")
+                rule.severity = args["severity"]
+            db.flush(); result = rule.to_dict()
+        elif row.action == "delete_alert_rule":
+            rule = db.get(AlertRule, args.get("rule_id"))
+            if rule is None: raise ValueError("Alert rule no longer exists.")
+            result = {"deleted": rule.id, "target": rule.target}; db.delete(rule)
         elif row.action == "configure_cpu":
             camera_id = args.get("camera_id")
             if db.get(Camera, camera_id) is None: raise ValueError("Camera no longer exists.")
@@ -62,12 +75,30 @@ def decide_action(db, row, decision, registry, cpu_monitor):
             created = Camera(name=name, location=str(args.get("location", "")), zone_tags=args.get("zone_tags") or [],
                              description=str(args.get("description", "")), source_type="rtsp", source_path=url)
             db.add(created); db.flush(); registry.add(created.id, created.source_path, "rtsp"); result = created.to_dict()
+        elif row.action == "update_rtsp_camera":
+            camera = db.get(Camera, args.get("camera_id"))
+            if camera is None: raise ValueError("Camera no longer exists.")
+            if camera.source_type != "rtsp": raise ValueError("The agent can only change RTSP camera sources.")
+            source_changed = False
+            for field in ("name", "location", "description"):
+                if field in args: setattr(camera, field, str(args[field]).strip())
+            if "zone_tags" in args: camera.zone_tags = [str(tag).strip() for tag in args["zone_tags"] if str(tag).strip()]
+            if "rtsp_url" in args:
+                if not _valid_rtsp(str(args["rtsp_url"])): raise ValueError("Invalid RTSP URL.")
+                source_changed = camera.source_path != args["rtsp_url"]; camera.source_path = args["rtsp_url"]
+            db.flush()
+            if source_changed:
+                registry.remove(camera.id); registry.add(camera.id, camera.source_path, "rtsp")
+            result = camera.to_dict()
         elif row.action == "delete_camera":
             camera = db.get(Camera, args.get("camera_id"))
             if camera is None: raise ValueError("Camera no longer exists.")
             if camera.source_type != "rtsp": raise ValueError("The agent can only delete RTSP cameras.")
             registry.remove(camera.id); db.query(CpuConfig).filter(CpuConfig.camera_id == camera.id).delete()
             cpu_monitor.reset(camera.id); result = {"deleted": camera.id, "name": camera.name}; db.delete(camera)
+        elif row.action == "activate_ai_profile":
+            if vlm is None: raise ValueError("Vision runtime is unavailable.")
+            result = vlm.activate(str(args.get("profile_id", "")))
         else:
             raise ValueError("Unsupported agent action.")
         row.status = "approved"; row.result = result; row.decided_at = datetime.now(timezone.utc); db.commit(); db.refresh(row)

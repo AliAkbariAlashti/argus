@@ -1180,7 +1180,7 @@ def agent_action_decision(action_id: str, payload: AgentActionDecision, db: Sess
     row = db.get(AgentAction, action_id)
     if row is None:
         raise HTTPException(404, "Agent action not found.")
-    return decide_action(db, row, payload.decision, registry, cpu_monitor).to_dict()
+    return decide_action(db, row, payload.decision, registry, cpu_monitor, vlm).to_dict()
 
 
 @app.post("/api/agent/test")
