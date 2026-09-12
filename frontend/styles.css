@@ -2089,6 +2089,10 @@ button { color:inherit; }
 .agent-action.approved { border-color:#315f49; }
 .agent-action.failed { border-color:#713d3d; }
 .agent-action-controls { display:flex; align-items:center; gap:7px; flex:none; }
+.agent-planner-form { display:grid; grid-template-columns:2fr 1.4fr 1fr 130px; align-items:end; gap:12px; margin-top:18px; }
+.agent-planner-form .check-field,.agent-planner-form .modal-actions,.agent-planner-form .runtime-message { grid-column:1/-1; }
+@media(max-width:900px) { .agent-planner-form { grid-template-columns:1fr 1fr; } }
+@media(max-width:600px) { .agent-planner-form { grid-template-columns:1fr; } }
 
 @media(max-width:1100px) {
   #view-chat .chat-layout { grid-template-columns: 160px minmax(420px,1fr) 250px; padding:12px; gap:10px; }

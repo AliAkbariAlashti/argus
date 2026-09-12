@@ -1,8 +1,11 @@
 """Bounded, model-driven Argus agent with typed operational tools."""
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy import func
@@ -54,7 +57,11 @@ class AgentUnavailable(RuntimeError):
 
 
 class AgentRuntime:
-    def __init__(self, base_url=AGENT_BASE_URL, model=AGENT_MODEL, api_key=AGENT_API_KEY, max_steps=AGENT_MAX_STEPS):
+    def __init__(self, base_url=AGENT_BASE_URL, model=AGENT_MODEL, api_key=AGENT_API_KEY, max_steps=AGENT_MAX_STEPS, path=None):
+        self.path = Path(path or os.environ.get("ARGUS_AGENT_RUNTIME_FILE", Path(__file__).resolve().parents[1] / "data" / "agent.json"))
+        if self.path.exists():
+            saved = json.loads(self.path.read_text())
+            base_url, model, api_key, max_steps = saved.get("base_url", base_url), saved.get("model", model), saved.get("api_key", api_key), saved.get("max_steps", max_steps)
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
@@ -69,9 +76,32 @@ class AgentRuntime:
 
     def public_status(self):
         cooling_down = bool(self._last_failure_at and time.monotonic() - self._last_failure_at < AGENT_FAILURE_COOLDOWN_SECONDS)
-        return {"configured": self.configured, "ready": self.configured and not cooling_down,
+        return {"configured": self.configured, "ready": self.configured and bool(self._last_success_at) and not cooling_down,
                 "base_url": self.base_url, "model": self.model, "max_steps": self.max_steps,
-                "last_error": self._last_error, "last_success_at": self._last_success_at, "cooling_down": cooling_down}
+                "has_api_key": bool(self.api_key), "last_error": self._last_error,
+                "last_success_at": self._last_success_at, "cooling_down": cooling_down}
+
+    def configure(self, *, base_url, model, api_key=None, max_steps=None, allow_remote=False):
+        base_url, model = base_url.strip().rstrip("/"), model.strip()
+        parsed = urlsplit(base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("Use an HTTP(S) API base URL without credentials, query, or fragment.")
+        if not model:
+            raise ValueError("Enter an instruction model name.")
+        local = parsed.hostname in ("localhost", "127.0.0.1", "::1", "host.docker.internal")
+        if not local and not allow_remote:
+            raise ValueError("Confirm that camera metadata and event records may be sent to this server.")
+        self.base_url, self.model = base_url, model
+        if api_key is not None: self.api_key = api_key
+        if max_steps is not None: self.max_steps = max(1, min(int(max_steps), 16))
+        self._last_error, self._last_failure_at = None, 0.0
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as output:
+            json.dump({"base_url": self.base_url, "model": self.model, "api_key": self.api_key, "max_steps": self.max_steps}, output)
+        temporary.replace(self.path)
+        return self.public_status()
 
     def _url(self):
         base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
@@ -98,7 +128,7 @@ class AgentRuntime:
         if self._last_failure_at and time.monotonic() - self._last_failure_at < AGENT_FAILURE_COOLDOWN_SECONDS:
             raise AgentUnavailable(self._last_error or "Instruction model is cooling down after a failure.")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        payload = {"model": self.model, "messages": messages, "tools": tools or [LOAD_TOOLS], "stream": on_token is not None}
+        payload = {"model": self.model, "messages": messages, "tools": tools if tools is not None else [LOAD_TOOLS], "stream": on_token is not None}
         url = self._url()
         if self._is_ollama():
             base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url

@@ -1521,6 +1521,22 @@ function escapeHtml(str) {
 /* ---------- Hardware-independent AI setup ---------- */
 let runtimeState = { settings: {}, hardware: {}, profiles: [], active_profile_id: null };
 let runtimeEditingId = null;
+let agentPlannerState = {};
+
+function renderAgentPlanner(status) {
+  agentPlannerState = status || {};
+  const badge = document.getElementById("agent-planner-status");
+  const label = status?.cooling_down ? "Cooling down" : status?.ready ? "Ready" : status?.configured ? "Needs test" : "Not configured";
+  badge.textContent = label;
+  badge.className = `runtime-status ${status?.ready ? "ok" : status?.cooling_down || status?.last_error ? "failed" : "pending"}`;
+  document.getElementById("agent-planner-url").value = status?.base_url || "";
+  document.getElementById("agent-planner-model").value = status?.model || "";
+  document.getElementById("agent-planner-steps").value = status?.max_steps || 8;
+  const key = document.getElementById("agent-planner-key");
+  key.value = "";
+  key.placeholder = status?.has_api_key ? "Key saved · leave blank to keep" : "Optional for local Ollama";
+  if (status?.last_error) document.getElementById("agent-planner-message").textContent = status.last_error;
+}
 
 function runtimeFields() {
   const provider = document.getElementById("runtime-provider").value;
@@ -1639,17 +1655,59 @@ function openRuntimeEditor(profile) {
 
 async function loadRuntime() {
   try {
-    const [res, usageRes] = await Promise.all([fetch(`${API}/api/runtime`), fetch(`${API}/api/runtime/usage`)]);
+    const [res, usageRes, agentRes] = await Promise.all([fetch(`${API}/api/runtime`), fetch(`${API}/api/runtime/usage`), fetch(`${API}/api/agent/status`)]);
     if (!res.ok) throw new Error("Could not load AI settings.");
     runtimeState = await res.json();
     renderRuntimeActive(); renderRuntimeProfiles(); renderRuntimePipeline(); renderRuntimeCapabilities();
     if (usageRes.ok) renderRuntimeUsage(await usageRes.json());
+    if (agentRes.ok) renderAgentPlanner(await agentRes.json());
     if (!document.getElementById("runtime-editor").hidden && runtimeEditingId) {
       const profile = (runtimeState.profiles || []).find(item => item.id === runtimeEditingId);
       if (profile) fillRuntimeForm(profile);
     }
   } catch (err) { document.getElementById("runtime-message").textContent = err.message; }
 }
+
+let agentPlannerBusy = false;
+async function saveAgentPlanner(test = false) {
+  if (agentPlannerBusy) return;
+  agentPlannerBusy = true;
+  const message = document.getElementById("agent-planner-message");
+  const testButton = document.getElementById("agent-planner-test");
+  const submitButton = document.querySelector("#agent-planner-form button[type=submit]");
+  testButton.disabled = submitButton.disabled = true;
+  message.textContent = test ? "Saving and testing the instruction model…" : "Saving instruction model…";
+  try {
+    const key = document.getElementById("agent-planner-key").value;
+    const payload = {
+      base_url: document.getElementById("agent-planner-url").value.trim(),
+      model: document.getElementById("agent-planner-model").value.trim(),
+      api_key: key || null,
+      max_steps: Number(document.getElementById("agent-planner-steps").value) || 8,
+      allow_remote: document.getElementById("agent-planner-remote").checked,
+    };
+    let response = await fetch(`${API}/api/agent/settings`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+    let data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Could not save the instruction model.");
+    renderAgentPlanner(data);
+    if (test) {
+      response = await fetch(`${API}/api/agent/test`, {method:"POST"});
+      data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Instruction model test failed.");
+      renderAgentPlanner(data);
+      message.textContent = data.ready ? "Planner test passed. Argus Agent is ready." : "The model responded without a usable answer.";
+    } else message.textContent = "Instruction model saved.";
+  } catch (error) {
+    message.textContent = error.message;
+    const status = {...agentPlannerState, ready:false, last_error:error.message};
+    renderAgentPlanner(status);
+  } finally {
+    agentPlannerBusy = false;
+    testButton.disabled = submitButton.disabled = false;
+  }
+}
+document.getElementById("agent-planner-form").onsubmit = event => { event.preventDefault(); saveAgentPlanner(false); };
+document.getElementById("agent-planner-test").onclick = () => saveAgentPlanner(true);
 
 async function saveRuntime(activate = true) {
   const res = await fetch(`${API}/api/runtime`, {method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify({

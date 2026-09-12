@@ -793,6 +793,14 @@ class AgentActionDecision(BaseModel):
     decision: str = Field(pattern="^(approve|reject)$")
 
 
+class AgentPlannerSettings(BaseModel):
+    base_url: str = Field(max_length=500)
+    model: str = Field(max_length=200)
+    api_key: Optional[str] = Field(default=None, max_length=1000)
+    max_steps: int = Field(default=8, ge=1, le=16)
+    allow_remote: bool = False
+
+
 @app.get("/api/camera-links")
 def list_camera_links(db: Session = Depends(get_db)):
     return [row.to_dict() for row in db.query(CameraLink).order_by(CameraLink.from_camera_id, CameraLink.to_camera_id).all()]
@@ -1164,6 +1172,14 @@ def agent_status():
     return agent_runtime.public_status()
 
 
+@app.put("/api/agent/settings")
+def configure_agent(payload: AgentPlannerSettings):
+    try:
+        return agent_runtime.configure(**payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
 @app.get("/api/agent/tool-runs")
 def agent_tool_runs(session_id: Optional[str] = None, limit: int = 100, db: Session = Depends(get_db)):
     query = db.query(AgentToolRun)
@@ -1196,8 +1212,13 @@ def agent_action_decision(action_id: str, payload: AgentActionDecision, db: Sess
 @app.post("/api/agent/test")
 def test_agent():
     try:
-        message = agent_runtime._complete([{"role": "user", "content": "Reply with exactly: ready"}])
-        return {**agent_runtime.public_status(), "ready": bool(message.get("content") or message.get("tool_calls"))}
+        message = agent_runtime._complete([{"role": "user", "content": "Reply with exactly: ready"}], tools=[])
+        ready = (message.get("content") or "").strip().lower().rstrip(".!\n") == "ready"
+        if not ready:
+            agent_runtime._last_error = "The instruction model did not return the expected test response."
+            agent_runtime._last_failure_at = time.monotonic()
+        status = agent_runtime.public_status()
+        return {**status, "ready": ready}
     except AgentUnavailable as exc:
         raise HTTPException(503, str(exc)) from None
 

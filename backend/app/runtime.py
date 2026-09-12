@@ -18,7 +18,8 @@ from .vlm import VisionLanguageModel
 
 class VisionRuntime:
     def __init__(self, path=None):
-        self.path = Path(path or os.environ.get("ARGUS_RUNTIME_FILE", Path(__file__).resolve().parents[2] / "data" / "runtime.json"))
+        default_path = Path(__file__).resolve().parents[1] / "data" / "runtime.json"
+        self.path = Path(path or os.environ.get("ARGUS_RUNTIME_FILE", default_path))
         self._settings = self._default_settings()
         self._profiles = {}
         self._active_profile_id = None
@@ -27,7 +28,11 @@ class VisionRuntime:
         self._lock = threading.RLock()
         self._embedded = VisionLanguageModel()
         self.interactive = threading.Event()
-        if self.path.exists():
+        legacy_path = Path(__file__).resolve().parents[2] / "data" / "runtime.json"
+        if not self.path.exists() and legacy_path != self.path and legacy_path.exists():
+            self._load_state(json.loads(legacy_path.read_text()))
+            self._persist()
+        elif self.path.exists():
             self._load_state(json.loads(self.path.read_text()))
 
     @staticmethod

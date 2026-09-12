@@ -95,3 +95,16 @@ def test_failed_endpoint_enters_fast_fallback_cooldown(monkeypatch):
         runtime._complete([])
     assert len(calls) == 1
     assert runtime.public_status()["cooling_down"] is True
+
+
+def test_agent_configuration_persists_without_exposing_key(tmp_path):
+    path = tmp_path / "agent.json"
+    runtime = AgentRuntime(base_url="", model="", path=path)
+    status = runtime.configure(base_url="http://127.0.0.1:11434/v1", model="qwen", api_key="secret", max_steps=6)
+    assert status["has_api_key"] is True
+    assert "secret" not in str(status)
+    reloaded = AgentRuntime(base_url="", model="", path=path)
+    assert reloaded.model == "qwen"
+    assert reloaded.api_key == "secret"
+    assert reloaded.max_steps == 6
+    assert reloaded.public_status()["ready"] is False
