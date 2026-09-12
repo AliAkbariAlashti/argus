@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import httpx
 
 from app.agent_runtime import AgentRuntime, AgentUnavailable
 
@@ -79,3 +80,18 @@ def test_streamed_tool_arguments_are_assembled_by_index():
     AgentRuntime._merge_tool_delta(calls, {"index": 0, "id": "call-1", "function": {"name": "get_camera_", "arguments": '{"camera'}})
     AgentRuntime._merge_tool_delta(calls, {"index": 0, "function": {"name": "health", "arguments": '_ids":["cam-1"]}'}})
     assert calls == [{"id": "call-1", "type": "function", "function": {"name": "get_camera_health", "arguments": '{"camera_ids":["cam-1"]}'}}]
+
+
+def test_failed_endpoint_enters_fast_fallback_cooldown(monkeypatch):
+    runtime = AgentRuntime(base_url="http://model", model="instruct")
+    calls = []
+    def fail(*args, **kwargs):
+        calls.append(1)
+        raise httpx.ConnectError("down")
+    monkeypatch.setattr("app.agent_runtime.httpx.post", fail)
+    with pytest.raises(AgentUnavailable, match="down"):
+        runtime._complete([])
+    with pytest.raises(AgentUnavailable, match="down"):
+        runtime._complete([])
+    assert len(calls) == 1
+    assert runtime.public_status()["cooling_down"] is True

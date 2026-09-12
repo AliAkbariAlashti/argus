@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy import func
 
-from .config import AGENT_API_KEY, AGENT_BASE_URL, AGENT_MAX_STEPS, AGENT_MODEL, AGENT_TIMEOUT_SECONDS
+from .config import AGENT_API_KEY, AGENT_BASE_URL, AGENT_FAILURE_COOLDOWN_SECONDS, AGENT_MAX_STEPS, AGENT_MODEL, AGENT_TIMEOUT_SECONDS
 from .agent_actions import create_proposal
 from .cpu import CpuSettings
 from .imaging import frame_to_pil, image_to_data_uri
@@ -59,13 +59,19 @@ class AgentRuntime:
         self.model = model
         self.api_key = api_key
         self.max_steps = max_steps
+        self._last_error = None
+        self._last_failure_at = 0.0
+        self._last_success_at = None
 
     @property
     def configured(self):
         return bool(self.base_url and self.model)
 
     def public_status(self):
-        return {"configured": self.configured, "base_url": self.base_url, "model": self.model, "max_steps": self.max_steps}
+        cooling_down = bool(self._last_failure_at and time.monotonic() - self._last_failure_at < AGENT_FAILURE_COOLDOWN_SECONDS)
+        return {"configured": self.configured, "ready": self.configured and not cooling_down,
+                "base_url": self.base_url, "model": self.model, "max_steps": self.max_steps,
+                "last_error": self._last_error, "last_success_at": self._last_success_at, "cooling_down": cooling_down}
 
     def _url(self):
         base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
@@ -89,6 +95,8 @@ class AgentRuntime:
     def _complete(self, messages, tools=None, on_token=None):
         if not self.configured:
             raise AgentUnavailable("No Argus instruction model is configured.")
+        if self._last_failure_at and time.monotonic() - self._last_failure_at < AGENT_FAILURE_COOLDOWN_SECONDS:
+            raise AgentUnavailable(self._last_error or "Instruction model is cooling down after a failure.")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         payload = {"model": self.model, "messages": messages, "tools": tools or [LOAD_TOOLS], "stream": on_token is not None}
         url = self._url()
@@ -129,9 +137,14 @@ class AgentRuntime:
                 arguments = (call.get("function") or {}).get("arguments")
                 if isinstance(arguments, dict):
                     call["function"]["arguments"] = json.dumps(arguments)
+            self._last_error = None
+            self._last_failure_at = 0.0
+            self._last_success_at = datetime.now(timezone.utc).isoformat()
             return message
         except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise AgentUnavailable(f"Instruction model unavailable: {exc}") from None
+            self._last_error = f"Instruction model unavailable: {exc}"
+            self._last_failure_at = time.monotonic()
+            raise AgentUnavailable(self._last_error) from None
 
     @staticmethod
     def _since(query, column, minutes):
