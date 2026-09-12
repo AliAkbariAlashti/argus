@@ -12,10 +12,12 @@ from .agent_actions import create_proposal
 from .cpu import CpuSettings
 from .imaging import frame_to_pil, image_to_data_uri
 from .models import AgentToolRun, AlertRule, Camera, CpuConfig, Event, Observation
+from .entity_matching import suggest_matches
+from .visual_search import find_by_text, find_similar
 
 log = logging.getLogger("qwenvl.agent_runtime")
 
-SYSTEM_PROMPT = """You are Argus, an operator for a CCTV system. Talk naturally and help the user investigate and operate their camera network. Use tools whenever the answer depends on cameras, current scenes, health, events, observations, rules, or configuration. You may call several tools before answering. Never claim you saw something unless a tool returned evidence. State camera names and timestamps when available. Explain uncertainty briefly. Do not invent camera IDs, records, or tool results. Any state-changing tool creates a proposal only; tell the user what you prepared and that they must approve its confirmation card. Current UTC time: {now}."""
+SYSTEM_PROMPT = """You are Argus, an operator for a CCTV system. Talk naturally and help the user investigate and operate their camera network. Use tools whenever the answer depends on cameras, current scenes, health, events, observations, rules, or configuration. Start by loading up to four relevant tools from the catalog, then call them as needed. You may load more tools in a later step. Never claim you saw something unless a tool returned evidence. State camera names and timestamps when available. Explain uncertainty briefly. Do not invent camera IDs, records, or tool results. Any state-changing tool creates a proposal only; tell the user what you prepared and that they must approve its confirmation card. Current UTC time: {now}.\nTool catalog:\n{catalog}"""
 
 
 TOOLS = [
@@ -25,6 +27,9 @@ TOOLS = [
     {"type": "function", "function": {"name": "search_events", "description": "Search operator-facing activity events and alerts.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}, "category": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 10080}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "get_activity_report", "description": "Return exact grouped counts of observations and events for a time window.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 10080}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "get_track_timeline", "description": "Get the chronological observation timeline for one track or confirmed cross-camera entity.", "parameters": {"type": "object", "properties": {"track_id": {"type": "string"}, "global_entity_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "anyOf": [{"required": ["track_id"]}, {"required": ["global_entity_id"]}], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "find_similar_appearance", "description": "Find observations whose tracked object looks similar to a reference observation.", "parameters": {"type": "object", "required": ["observation_id"], "properties": {"observation_id": {"type": "string"}, "camera_id": {"type": "string"}, "object_type": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "search_visual_description", "description": "Semantic search for a visual description across stored observation embeddings. Availability depends on the configured embedding provider.", "parameters": {"type": "object", "required": ["description"], "properties": {"description": {"type": "string"}, "camera_id": {"type": "string"}, "object_type": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "suggest_cross_camera_matches", "description": "Find likely continuations of a tracked observation in connected cameras using appearance and travel-time constraints.", "parameters": {"type": "object", "required": ["observation_id"], "properties": {"observation_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "list_alert_rules", "description": "List alert rules and whether they are enabled.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "get_cpu_configuration", "description": "Read CPU-tool settings for selected or all cameras.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_alert_rule", "description": "Prepare an alert rule for operator confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["target"], "properties": {"camera_id": {"type": "string"}, "source": {"type": "string", "enum": ["cpu", "vlm"]}, "target": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}}, "additionalProperties": False}}},
@@ -33,6 +38,10 @@ TOOLS = [
     {"type": "function", "function": {"name": "propose_delete_camera", "description": "Prepare deleting an RTSP camera for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["camera_id"], "properties": {"camera_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "inspect_live_cameras", "description": "Ask the vision model to inspect current frames. Use only when pixels must be examined, after identifying relevant cameras.", "parameters": {"type": "object", "required": ["camera_ids", "question"], "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
 ]
+
+TOOL_BY_NAME = {item["function"]["name"]: item for item in TOOLS}
+TOOL_CATALOG = "\n".join(f"- {name}: {item['function']['description']}" for name, item in TOOL_BY_NAME.items())
+LOAD_TOOLS = {"type": "function", "function": {"name": "load_tools", "description": "Load the schemas for tools needed to handle this request.", "parameters": {"type": "object", "required": ["names"], "properties": {"names": {"type": "array", "items": {"type": "string", "enum": list(TOOL_BY_NAME)}, "minItems": 1, "maxItems": 4}}, "additionalProperties": False}}}
 
 
 class AgentUnavailable(RuntimeError):
@@ -60,11 +69,11 @@ class AgentRuntime:
     def _is_ollama(self):
         return "ollama" in self.base_url.lower() or any(port in self.base_url for port in (":11434", ":11435"))
 
-    def _complete(self, messages):
+    def _complete(self, messages, tools=None):
         if not self.configured:
             raise AgentUnavailable("No Argus instruction model is configured.")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        payload = {"model": self.model, "messages": messages, "tools": TOOLS, "stream": False}
+        payload = {"model": self.model, "messages": messages, "tools": tools or [LOAD_TOOLS], "stream": False}
         url = self._url()
         if self._is_ollama():
             base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
@@ -156,6 +165,23 @@ class AgentRuntime:
                 return {"error": "Provide track_id or global_entity_id."}, [], None
             rows = query.order_by(Observation.observed_at).limit(min(args.get("limit", 100), 200)).all()
             return {"count": len(rows), "timeline": [row.to_dict() for row in rows]}, list(dict.fromkeys(row.camera_id for row in rows)), None
+        if name == "find_similar_appearance":
+            result = find_similar(db, args["observation_id"], camera_id=args.get("camera_id"), object_type=args.get("object_type"), limit=args.get("limit", 20))
+            if result is None: return {"error": "Reference observation has no visual embedding."}, [], None
+            used = list(dict.fromkeys(item["camera_id"] for item in result.get("matches", [])))
+            return result, used, None
+        if name == "search_visual_description":
+            try:
+                result = find_by_text(db, args["description"], camera_id=args.get("camera_id"), object_type=args.get("object_type"), limit=args.get("limit", 20))
+            except ValueError as exc:
+                return {"error": str(exc)}, [], None
+            used = list(dict.fromkeys(item["camera_id"] for item in result.get("matches", [])))
+            return result, used, None
+        if name == "suggest_cross_camera_matches":
+            result = suggest_matches(db, args["observation_id"], args.get("limit", 10))
+            if result is None: return {"error": "A tracked source observation is required."}, [], None
+            used = [result["source"]["camera_id"]] + [item["target"]["camera_id"] for item in result.get("matches", [])]
+            return result, list(dict.fromkeys(used)), None
         if name == "list_alert_rules":
             rows = db.query(AlertRule).order_by(AlertRule.created_at).all()
             return {"rules": [row.to_dict() for row in rows]}, list(dict.fromkeys(row.camera_id for row in rows if row.camera_id)), None
@@ -204,21 +230,26 @@ class AgentRuntime:
             context["events"] = [{key: item.get(key) for key in ("id", "camera_id", "created_at", "category", "severity")} for item in result.get("events", [])[:10]]
         elif tool == "get_track_timeline":
             context["track_timeline"] = [{key: item.get(key) for key in ("id", "camera_id", "observed_at", "track_id", "global_entity_id")} for item in result.get("timeline", [])[:20]]
+        elif tool in ("find_similar_appearance", "search_visual_description"):
+            context["visual_matches"] = [{key: item.get(key) for key in ("observation_id", "camera_id", "observed_at", "object_type", "similarity")} for item in result.get("matches", [])[:10]]
+        elif tool == "suggest_cross_camera_matches":
+            context["cross_camera_matches"] = [{"association_id": item.get("id"), "target_observation_id": item.get("target_observation_id"), "camera_id": (item.get("target") or {}).get("camera_id"), "similarity": item.get("similarity")} for item in result.get("matches", [])[:10]]
         elif result.get("proposal"):
             context["pending_action"] = {key: result["proposal"].get(key) for key in ("id", "action", "summary", "status")}
         context["last_tool"] = tool
         return context
 
     def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, session_id="unsaved", session_context=None):
-        messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=datetime.now(timezone.utc).isoformat())}]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=datetime.now(timezone.utc).isoformat(), catalog=TOOL_CATALOG)}]
         context = dict(session_context or {})
         if context:
             messages.append({"role": "system", "content": "Structured context retained from this conversation. Resolve follow-ups against these stable IDs:\n" + json.dumps(context, default=str)[:12000]})
         messages.extend({"role": item["role"], "content": item["text"]} for item in history)
         messages.append({"role": "user", "content": question})
         trace, cameras_used, snapshot, pending_actions = [], [], None, []
+        active_tools = [LOAD_TOOLS]
         for step in range(self.max_steps):
-            message = self._complete(messages)
+            message = self._complete(messages, active_tools)
             calls = message.get("tool_calls") or []
             if not calls:
                 content = message.get("content")
@@ -237,7 +268,14 @@ class AgentRuntime:
                 started = time.monotonic()
                 status = "completed"
                 try:
-                    result, used, evidence = self._run_tool(name, args, db, registry, cpu_monitor, vlm, session_id)
+                    if name == "load_tools":
+                        selected = [item for item in args.get("names", []) if item in TOOL_BY_NAME][:4]
+                        active_tools = [LOAD_TOOLS, *(TOOL_BY_NAME[item] for item in selected)]
+                        result, used, evidence = {"loaded": selected}, [], None
+                    elif name not in {item["function"]["name"] for item in active_tools}:
+                        result, used, evidence, status = {"error": "Tool is not loaded. Call load_tools first."}, [], None, "error"
+                    else:
+                        result, used, evidence = self._run_tool(name, args, db, registry, cpu_monitor, vlm, session_id)
                     if result.get("error"):
                         status = "error"
                 except Exception as exc:  # keep one failed tool from destroying the conversation
