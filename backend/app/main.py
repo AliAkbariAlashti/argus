@@ -977,7 +977,7 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
         try:
             result = agent_runtime.answer(
                 req.question, _recent_history(db, session.id), db, registry, cpu_monitor, vlm,
-                on_status=on_status, session_id=session.id, session_context=session.context or {},
+                on_status=on_status, on_token=on_token, session_id=session.id, session_context=session.context or {},
             )
             session.context = result.pop("session_context")
             db.commit()

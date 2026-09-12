@@ -74,11 +74,23 @@ class AgentRuntime:
     def _is_ollama(self):
         return "ollama" in self.base_url.lower() or any(port in self.base_url for port in (":11434", ":11435"))
 
-    def _complete(self, messages, tools=None):
+    @staticmethod
+    def _merge_tool_delta(target, delta):
+        index = int(delta.get("index", 0))
+        while len(target) <= index:
+            target.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+        call = target[index]
+        if delta.get("id"): call["id"] = delta["id"]
+        function = delta.get("function") or {}
+        call["function"]["name"] += function.get("name") or ""
+        arguments = function.get("arguments")
+        call["function"]["arguments"] += json.dumps(arguments) if isinstance(arguments, dict) else arguments or ""
+
+    def _complete(self, messages, tools=None, on_token=None):
         if not self.configured:
             raise AgentUnavailable("No Argus instruction model is configured.")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        payload = {"model": self.model, "messages": messages, "tools": tools or [LOAD_TOOLS], "stream": False}
+        payload = {"model": self.model, "messages": messages, "tools": tools or [LOAD_TOOLS], "stream": on_token is not None}
         url = self._url()
         if self._is_ollama():
             base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
@@ -87,10 +99,32 @@ class AgentRuntime:
         else:
             payload.update({"tool_choice": "auto", "temperature": 0.1, "max_tokens": 512, "reasoning_effort": "none"})
         try:
-            response = httpx.post(url, headers=headers, json=payload, timeout=AGENT_TIMEOUT_SECONDS)
-            response.raise_for_status()
-            packet = response.json()
-            message = packet["message"] if self._is_ollama() else packet["choices"][0]["message"]
+            if on_token is None:
+                response = httpx.post(url, headers=headers, json=payload, timeout=AGENT_TIMEOUT_SECONDS)
+                response.raise_for_status()
+                packet = response.json()
+                message = packet["message"] if self._is_ollama() else packet["choices"][0]["message"]
+            else:
+                content, calls = [], []
+                with httpx.stream("POST", url, headers=headers, json=payload, timeout=AGENT_TIMEOUT_SECONDS) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line: continue
+                        if self._is_ollama():
+                            packet = json.loads(line); delta = packet.get("message") or {}
+                        else:
+                            if not line.startswith("data:"): continue
+                            data = line[5:].strip()
+                            if data == "[DONE]": break
+                            packet = json.loads(data); choices = packet.get("choices") or []
+                            if not choices: continue
+                            delta = choices[0].get("delta") or {}
+                        chunk = delta.get("content") or ""
+                        if chunk:
+                            content.append(chunk); on_token(chunk)
+                        for call_delta in delta.get("tool_calls") or []:
+                            self._merge_tool_delta(calls, call_delta)
+                message = {"role": "assistant", "content": "".join(content), "tool_calls": calls}
             for call in message.get("tool_calls") or []:
                 arguments = (call.get("function") or {}).get("arguments")
                 if isinstance(arguments, dict):
@@ -250,7 +284,7 @@ class AgentRuntime:
         context["last_tool"] = tool
         return context
 
-    def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, session_id="unsaved", session_context=None):
+    def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, on_token=None, session_id="unsaved", session_context=None):
         messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=datetime.now(timezone.utc).isoformat(), catalog=TOOL_CATALOG)}]
         context = dict(session_context or {})
         if context:
@@ -260,7 +294,7 @@ class AgentRuntime:
         trace, cameras_used, snapshot, pending_actions = [], [], None, []
         active_tools = [LOAD_TOOLS]
         for step in range(self.max_steps):
-            message = self._complete(messages, active_tools)
+            message = self._complete(messages, active_tools, on_token)
             calls = message.get("tool_calls") or []
             if not calls:
                 content = message.get("content")
