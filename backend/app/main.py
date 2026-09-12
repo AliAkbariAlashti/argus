@@ -879,7 +879,8 @@ def create_chat_session(db: Session = Depends(get_db)):
 
 @app.delete("/api/chat/sessions/{session_id}")
 def delete_chat_session(session_id: str, db: Session = Depends(get_db)):
-    if not _chat_lock.acquire(blocking=False):
+    conversation_lock = _conversation_lock(session_id)
+    if not conversation_lock.acquire(blocking=False):
         raise HTTPException(409, "Wait for the current answer before deleting a conversation.")
     try:
         row = db.get(ChatSession, session_id)
@@ -892,7 +893,7 @@ def delete_chat_session(session_id: str, db: Session = Depends(get_db)):
         db.commit()
         return {"deleted": session_id}
     finally:
-        _chat_lock.release()
+        conversation_lock.release()
 
 
 @app.get("/api/chat/history")
@@ -906,7 +907,8 @@ def chat_history(session_id: Optional[str] = None, db: Session = Depends(get_db)
 
 @app.delete("/api/chat/history")
 def clear_chat_history(session_id: Optional[str] = None, db: Session = Depends(get_db)):
-    if not _chat_lock.acquire(blocking=False):
+    conversation_lock = _conversation_lock(session_id)
+    if not conversation_lock.acquire(blocking=False):
         raise HTTPException(409, "Wait for the current answer before clearing the conversation.")
     try:
         query = db.query(ChatMessage)
@@ -919,7 +921,7 @@ def clear_chat_history(session_id: Optional[str] = None, db: Session = Depends(g
         db.commit()
         return {"deleted": deleted}
     finally:
-        _chat_lock.release()
+        conversation_lock.release()
 
 
 def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
@@ -1147,6 +1149,14 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
 # One conversation and one GPU: reject overlapping questions instead of
 # silently building an unbounded queue or interleaving conversation turns.
 _chat_lock = threading.Lock()
+_conversation_locks = {}
+_conversation_locks_guard = threading.Lock()
+
+
+def _conversation_lock(session_id):
+    key = session_id or "anonymous"
+    with _conversation_locks_guard:
+        return _conversation_locks.setdefault(key, threading.Lock())
 
 
 @app.get("/api/agent/status")
@@ -1194,20 +1204,22 @@ def test_agent():
 
 @app.post("/api/chat")
 def chat(req: ChatRequest, db: Session = Depends(get_db)):
-    if not _chat_lock.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="An answer is already in progress. Please wait.")
+    conversation_lock = _conversation_lock(req.session_id)
+    if not conversation_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="An answer is already in progress in this conversation. Please wait.")
     vlm.interactive.set()
     try:
         return _answer_chat(req, db)
     finally:
         vlm.interactive.clear()
-        _chat_lock.release()
+        conversation_lock.release()
 
 
 @app.post("/api/chat/stream")
 async def stream_chat(req: ChatRequest):
-    if not _chat_lock.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="An answer is already in progress. Please wait.")
+    conversation_lock = _conversation_lock(req.session_id)
+    if not conversation_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="An answer is already in progress in this conversation. Please wait.")
     vlm.interactive.set()
     loop = asyncio.get_running_loop()
     messages = asyncio.Queue()
@@ -1235,7 +1247,7 @@ async def stream_chat(req: ChatRequest):
             emit("error", {"detail": "Analysis failed. Check system health and try again."})
         finally:
             vlm.interactive.clear()
-            _chat_lock.release()
+            conversation_lock.release()
             emit("done", {})
 
     async def events():
@@ -1259,7 +1271,7 @@ async def stream_chat(req: ChatRequest):
         threading.Thread(target=work, daemon=True).start()
     except Exception:
         vlm.interactive.clear()
-        _chat_lock.release()
+        conversation_lock.release()
         raise
     return StreamingResponse(events(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
