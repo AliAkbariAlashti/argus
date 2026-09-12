@@ -20,7 +20,8 @@ from .visual_search import find_by_text, find_similar
 
 log = logging.getLogger("qwenvl.agent_runtime")
 
-SYSTEM_PROMPT = """You are Argus, an operator for a CCTV system. Talk naturally and help the user investigate and operate their camera network. Use tools whenever the answer depends on cameras, current scenes, health, events, observations, rules, or configuration. Start by loading up to four relevant tools from the catalog, then call them as needed. You may load more tools in a later step. Never claim you saw something unless a tool returned evidence. State camera names and timestamps when available. Explain uncertainty briefly. Do not invent camera IDs, records, or tool results. Any state-changing tool creates a proposal only; tell the user what you prepared and that they must approve its confirmation card. Current UTC time: {now}.\nTool catalog:\n{catalog}"""
+SYSTEM_PROMPT = """You are Argus, a CCTV operator. Speak naturally. Use tools for camera, scene, health, event, rule, and configuration facts. First call load_tools with up to four names from the catalog; load more later if needed. Never invent evidence or IDs. Include camera names and times when known. Changes create confirmation proposals. UTC: {now}.\nTools: {catalog}"""
+OLLAMA_SYSTEM_PROMPT = """You are Argus, a CCTV operator. Speak naturally. Call call_argus_tool for camera, scene, health, event, rule, and configuration facts. Put the exact tool name and its arguments in that call. Never invent evidence or IDs. Include camera names and times when known. Changes create confirmation proposals. UTC: {now}.\nTools: {catalog}"""
 
 
 TOOLS = [
@@ -48,8 +49,9 @@ TOOLS = [
 ]
 
 TOOL_BY_NAME = {item["function"]["name"]: item for item in TOOLS}
-TOOL_CATALOG = "\n".join(f"- {name}: {item['function']['description']}" for name, item in TOOL_BY_NAME.items())
-LOAD_TOOLS = {"type": "function", "function": {"name": "load_tools", "description": "Load the schemas for tools needed to handle this request.", "parameters": {"type": "object", "required": ["names"], "properties": {"names": {"type": "array", "items": {"type": "string", "enum": list(TOOL_BY_NAME)}, "minItems": 1, "maxItems": 4}}, "additionalProperties": False}}}
+TOOL_CATALOG = ", ".join(TOOL_BY_NAME)
+LOAD_TOOLS = {"type": "function", "function": {"name": "load_tools", "description": "Load schemas by exact names from the system catalog.", "parameters": {"type": "object", "required": ["names"], "properties": {"names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}}, "additionalProperties": False}}}
+CALL_ARGUS_TOOL = {"type": "function", "function": {"name": "call_argus_tool", "description": "Call one exact tool from the system catalog.", "parameters": {"type": "object", "required": ["name", "arguments"], "properties": {"name": {"type": "string"}, "arguments": {"type": "object"}}, "additionalProperties": False}}}
 
 
 class AgentUnavailable(RuntimeError):
@@ -111,6 +113,26 @@ class AgentRuntime:
         return "ollama" in self.base_url.lower() or any(port in self.base_url for port in (":11434", ":11435"))
 
     @staticmethod
+    def _ollama_messages(messages):
+        native = []
+        for original in messages:
+            message = dict(original)
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                calls = []
+                for original_call in message["tool_calls"]:
+                    function = dict(original_call.get("function") or {})
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str):
+                        try: function["arguments"] = json.loads(arguments)
+                        except json.JSONDecodeError: function["arguments"] = {}
+                    calls.append({"function": function})
+                message = {"role": "assistant", "content": message.get("content") or "", "tool_calls": calls}
+            elif message.get("role") == "tool":
+                message = {"role": "tool", "content": message.get("content") or "", "tool_name": message.get("name") or ""}
+            native.append(message)
+        return native
+
+    @staticmethod
     def _merge_tool_delta(target, delta):
         index = int(delta.get("index", 0))
         while len(target) <= index:
@@ -128,16 +150,18 @@ class AgentRuntime:
         if self._last_failure_at and time.monotonic() - self._last_failure_at < AGENT_FAILURE_COOLDOWN_SECONDS:
             raise AgentUnavailable(self._last_error or "Instruction model is cooling down after a failure.")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        payload = {"model": self.model, "messages": messages, "tools": tools if tools is not None else [LOAD_TOOLS], "stream": on_token is not None}
+        stream_response = on_token is not None or self._is_ollama()
+        payload = {"model": self.model, "messages": messages, "tools": tools if tools is not None else [LOAD_TOOLS], "stream": stream_response}
         url = self._url()
         if self._is_ollama():
             base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
             url = base + "/api/chat"
-            payload.update({"think": False, "options": {"temperature": 0.1, "num_predict": 512}})
+            payload["messages"] = self._ollama_messages(messages)
+            payload.update({"think": False, "options": {"temperature": 0.1, "num_predict": 160}})
         else:
             payload.update({"tool_choice": "auto", "temperature": 0.1, "max_tokens": 512, "reasoning_effort": "none"})
         try:
-            if on_token is None:
+            if not stream_response:
                 response = httpx.post(url, headers=headers, json=payload, timeout=AGENT_TIMEOUT_SECONDS)
                 response.raise_for_status()
                 packet = response.json()
@@ -159,7 +183,8 @@ class AgentRuntime:
                             delta = choices[0].get("delta") or {}
                         chunk = delta.get("content") or ""
                         if chunk:
-                            content.append(chunk); on_token(chunk)
+                            content.append(chunk)
+                            if on_token: on_token(chunk)
                         for call_delta in delta.get("tool_calls") or []:
                             self._merge_tool_delta(calls, call_delta)
                 message = {"role": "assistant", "content": "".join(content), "tool_calls": calls}
@@ -180,6 +205,19 @@ class AgentRuntime:
     def _since(query, column, minutes):
         return query.filter(column >= datetime.now(timezone.utc) - timedelta(minutes=minutes)) if minutes else query
 
+    @staticmethod
+    def _model_result(name, result):
+        if name == "get_camera_health":
+            cameras = []
+            for camera in result.get("cameras", []):
+                cpu = camera.get("cpu_status") or {}
+                flags = [key for key in ("motion", "low_light", "low_detail") if cpu.get(key)]
+                cameras.append([camera.get("camera_id"), camera.get("name"), bool(camera.get("online")),
+                                round(camera.get("fps") or 0, 1), bool(cpu.get("online")), flags,
+                                cpu.get("tracked_counts") or {}, cpu.get("message")])
+            return {"columns": ["id", "name", "online", "fps", "cpu_online", "flags", "objects", "message"], "cameras": cameras}
+        return result
+
     def _run_tool(self, name, args, db, registry, cpu_monitor, vlm, session_id="unsaved"):
         cameras = db.query(Camera).order_by(Camera.created_at).all()
         by_id = {camera.id: camera for camera in cameras}
@@ -188,7 +226,9 @@ class AgentRuntime:
             return {"error": "One or more camera IDs do not exist."}, [], None
         selected = [by_id[camera_id] for camera_id in requested] if requested else cameras
         if name == "list_cameras":
-            data = [{**camera.to_dict(), "online": bool(registry.get(camera.id) and registry.get(camera.id).is_online())} for camera in cameras]
+            data = [{"id": camera.id, "name": camera.name, "location": camera.location,
+                     "zone_tags": camera.zone_tags, "source_type": camera.source_type,
+                     "online": bool(registry.get(camera.id) and registry.get(camera.id).is_online())} for camera in cameras]
             return {"cameras": data}, [camera.id for camera in cameras], None
         if name == "get_camera_health":
             data = []
@@ -328,14 +368,15 @@ class AgentRuntime:
         return context
 
     def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, on_token=None, session_id="unsaved", session_context=None):
-        messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=datetime.now(timezone.utc).isoformat(), catalog=TOOL_CATALOG)}]
+        prompt = OLLAMA_SYSTEM_PROMPT if self._is_ollama() else SYSTEM_PROMPT
+        messages = [{"role": "system", "content": prompt.format(now=datetime.now(timezone.utc).isoformat(), catalog=TOOL_CATALOG)}]
         context = dict(session_context or {})
         if context:
             messages.append({"role": "system", "content": "Structured context retained from this conversation. Resolve follow-ups against these stable IDs:\n" + json.dumps(context, default=str)[:12000]})
         messages.extend({"role": item["role"], "content": item["text"]} for item in history)
         messages.append({"role": "user", "content": question})
         trace, cameras_used, snapshot, pending_actions = [], [], None, []
-        active_tools = [LOAD_TOOLS]
+        active_tools = [CALL_ARGUS_TOOL] if self._is_ollama() else [LOAD_TOOLS]
         for step in range(self.max_steps):
             message = self._complete(messages, active_tools, on_token)
             calls = message.get("tool_calls") or []
@@ -347,11 +388,15 @@ class AgentRuntime:
             messages.append(message)
             for call in calls:
                 function = call.get("function") or {}
-                name = function.get("name", "")
+                wire_name = function.get("name", "")
                 try: args = json.loads(function.get("arguments") or "{}")
                 except json.JSONDecodeError: args = {}
                 if not isinstance(args, dict):
                     args = {}
+                name = wire_name
+                if wire_name == "call_argus_tool":
+                    name = args.get("name", "")
+                    args = args.get("arguments") if isinstance(args.get("arguments"), dict) else {}
                 if on_status: on_status(f"Using {name.replace('_', ' ')}…")
                 started = time.monotonic()
                 status = "completed"
@@ -360,7 +405,7 @@ class AgentRuntime:
                         selected = [item for item in args.get("names", []) if item in TOOL_BY_NAME][:4]
                         active_tools = [LOAD_TOOLS, *(TOOL_BY_NAME[item] for item in selected)]
                         result, used, evidence = {"loaded": selected}, [], None
-                    elif name not in {item["function"]["name"] for item in active_tools}:
+                    elif wire_name != "call_argus_tool" and name not in {item["function"]["name"] for item in active_tools}:
                         result, used, evidence, status = {"error": "Tool is not loaded. Call load_tools first."}, [], None, "error"
                     else:
                         result, used, evidence = self._run_tool(name, args, db, registry, cpu_monitor, vlm, session_id)
@@ -378,7 +423,8 @@ class AgentRuntime:
                     pending_actions.append(result["proposal"])
                 cameras_used.extend(used)
                 snapshot = snapshot or evidence
-                messages.append({"role": "tool", "tool_call_id": call.get("id", f"step-{step}"), "name": name, "content": json.dumps(result, default=str)[:30000]})
+                model_result = self._model_result(name, result)
+                messages.append({"role": "tool", "tool_call_id": call.get("id", f"step-{step}"), "name": wire_name, "content": json.dumps(model_result, default=str)[:6000]})
         raise AgentUnavailable(f"Agent exceeded its {self.max_steps}-step limit.")
 
 

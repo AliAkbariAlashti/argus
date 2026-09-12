@@ -82,6 +82,40 @@ def test_streamed_tool_arguments_are_assembled_by_index():
     assert calls == [{"id": "call-1", "type": "function", "function": {"name": "get_camera_health", "arguments": '{"camera_ids":["cam-1"]}'}}]
 
 
+def test_ollama_follow_up_messages_use_native_tool_format():
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "list_cameras", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call-1", "name": "list_cameras", "content": '{"cameras":[]}'},
+    ]
+    assert AgentRuntime._ollama_messages(messages) == [
+        {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "list_cameras", "arguments": {}}}]},
+        {"role": "tool", "content": '{"cameras":[]}', "tool_name": "list_cameras"},
+    ]
+
+
+def test_ollama_uses_single_step_generic_dispatch(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    replies = iter([
+        {"role": "assistant", "tool_calls": [{"id": "a", "function": {"name": "call_argus_tool", "arguments": json.dumps({"name": "get_camera_health", "arguments": {}})}}]},
+        {"role": "assistant", "content": "All cameras are online."},
+    ])
+    monkeypatch.setattr(runtime, "_complete", lambda messages, tools=None, on_token=None: next(replies))
+    calls = []
+    monkeypatch.setattr(runtime, "_run_tool", lambda name, args, *rest: (calls.append((name, args)) or {"ok": True}, [], None))
+    result = runtime.answer("Which cameras are online?", [], fake_db(), object(), object(), object())
+    assert calls == [("get_camera_health", {})]
+    assert result["answer"] == "All cameras are online."
+
+
+def test_camera_health_is_compact_for_model_context():
+    result = {"cameras": [{"camera_id": "cam-1", "name": "Lobby", "online": True, "fps": 20,
+                            "cpu_enabled": True, "cpu_status": {"online": True, "motion": False,
+                            "boxes": [[0, 0, 1, 1]], "tracked_objects": [{"track_id": 1}],
+                            "tracked_counts": {"person": 1}}}]}
+    compact = AgentRuntime._model_result("get_camera_health", result)
+    assert compact["cameras"] == [["cam-1", "Lobby", True, 20, True, [], {"person": 1}, None]]
+
+
 def test_failed_endpoint_enters_fast_fallback_cooldown(monkeypatch):
     runtime = AgentRuntime(base_url="http://model", model="instruct")
     calls = []
