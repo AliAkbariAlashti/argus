@@ -35,6 +35,19 @@ def stream_answer(base, payload, timeout=300):
     raise RuntimeError("Agent stream ended without an answer.")
 
 
+def assess(name, answer, expected, elapsed):
+    tools = [item.get("tool") for item in answer.get("tool_trace", [])]
+    failures = []
+    if answer.get("scope") != "agent": failures.append(f"scope={answer.get('scope')!r}")
+    for tool in expected.get("expected_tools", []):
+        if tool not in tools: failures.append(f"missing tool {tool}")
+    if elapsed > expected.get("max_seconds", 90): failures.append(f"latency {elapsed}s")
+    if expected.get("expects_confirmation") and not answer.get("pending_actions"): failures.append("missing confirmation proposal")
+    if not answer.get("answer", "").strip(): failures.append("empty answer")
+    return {"name": name, "passed": not failures, "elapsed_seconds": elapsed,
+            "tools": tools, "failures": failures, "answer": answer.get("answer")}
+
+
 def run(base, scenarios):
     results = []
     status = request(base, "/api/agent/status")
@@ -43,20 +56,14 @@ def run(base, scenarios):
     for scenario in scenarios:
         print(f"Running {scenario['name']}…", file=sys.stderr, flush=True)
         session = request(base, "/api/chat/sessions", "POST", {})
-        started = time.monotonic()
         try:
-            answer = stream_answer(base, {"question": scenario["question"], "session_id": session["id"]})
-            elapsed = round(time.monotonic() - started, 2)
-            tools = [item.get("tool") for item in answer.get("tool_trace", [])]
-            failures = []
-            if answer.get("scope") != "agent": failures.append(f"scope={answer.get('scope')!r}")
-            for expected in scenario.get("expected_tools", []):
-                if expected not in tools: failures.append(f"missing tool {expected}")
-            if elapsed > scenario.get("max_seconds", 90): failures.append(f"latency {elapsed}s")
-            if scenario.get("expects_confirmation") and not answer.get("pending_actions"): failures.append("missing confirmation proposal")
-            if not answer.get("answer", "").strip(): failures.append("empty answer")
-            results.append({"name": scenario["name"], "passed": not failures, "elapsed_seconds": elapsed,
-                            "tools": tools, "failures": failures, "answer": answer.get("answer")})
+            turns = scenario.get("turns") or [scenario]
+            for index, turn in enumerate(turns, 1):
+                started = time.monotonic()
+                answer = stream_answer(base, {"question": turn["question"], "session_id": session["id"]})
+                elapsed = round(time.monotonic() - started, 2)
+                name = scenario["name"] if len(turns) == 1 else f"{scenario['name']} / turn {index}"
+                results.append(assess(name, answer, {**scenario, **turn}, elapsed))
         except (urllib.error.URLError, TimeoutError, socket.timeout, RuntimeError) as exc:
             results.append({"name": scenario["name"], "passed": False, "failures": [str(exc)]})
         finally:

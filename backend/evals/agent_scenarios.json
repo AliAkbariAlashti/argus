@@ -23,5 +23,25 @@
     "expected_tools": ["propose_alert_rule"],
     "expects_confirmation": true,
     "max_seconds": 90
+  },
+  {
+    "name": "camera follow-up",
+    "max_seconds": 90,
+    "turns": [
+      {
+        "question": "List the cameras and remember their identities.",
+        "expected_tools": ["list_cameras"]
+      },
+      {
+        "question": "Which of those need attention right now?",
+        "expected_tools": ["get_camera_health"]
+      }
+    ]
+  },
+  {
+    "name": "recording inventory",
+    "question": "Which camera recordings can you inspect and how long are they?",
+    "expected_tools": ["list_recordings"],
+    "max_seconds": 90
   }
 ]

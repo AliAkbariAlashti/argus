@@ -24,3 +24,24 @@ def test_eval_reports_deterministic_fallback_as_failure(monkeypatch):
     result = run_agent_eval.run("http://argus", [{"name": "health", "question": "online?", "expected_tools": ["get_camera_health"]}])
     assert result[0]["passed"] is False
     assert "scope='camera_health'" in result[0]["failures"]
+
+
+def test_eval_reuses_one_session_for_follow_up_turns(monkeypatch):
+    created = []
+    def fake_request(base, path, method="GET", payload=None, timeout=180):
+        if path == "/api/agent/status": return {"configured": True}
+        if path == "/api/chat/sessions": created.append(1); return {"id": "same-session"}
+        return {}
+    payloads = []
+    def fake_stream(base, payload, timeout=300):
+        payloads.append(payload)
+        return {"scope": "agent", "answer": "ok", "tool_trace": [{"tool": "list_cameras"}]}
+    monkeypatch.setattr(run_agent_eval, "request", fake_request)
+    monkeypatch.setattr(run_agent_eval, "stream_answer", fake_stream)
+    result = run_agent_eval.run("http://argus", [{"name": "follow-up", "turns": [
+        {"question": "list", "expected_tools": ["list_cameras"]},
+        {"question": "those?", "expected_tools": ["list_cameras"]},
+    ]}])
+    assert all(item["passed"] for item in result)
+    assert created == [1]
+    assert [item["session_id"] for item in payloads] == ["same-session", "same-session"]
