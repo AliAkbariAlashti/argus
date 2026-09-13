@@ -511,7 +511,7 @@ function renderChat() {
     return;
   }
   for (const msg of chatLog) {
-    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot, msg.scope, msg.evidence, msg.pendingActions);
+    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot, msg.scope, msg.evidence, msg.pendingActions, msg.toolTrace);
   }
   el.chatLog.scrollTop = el.chatLog.scrollHeight;
 }
@@ -525,7 +525,7 @@ function camerasUsedLabel(camIds) {
   return names.length === 1 ? names[0] : names.join(", ");
 }
 
-function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evidence, pendingActions) {
+function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evidence, pendingActions, toolTrace) {
   const bubble = document.createElement("div");
   bubble.className = `msg msg-${role}` + (thinking ? " thinking" : "");
 
@@ -599,6 +599,22 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evi
       actions.appendChild(card);
     }
     bubble.appendChild(actions);
+  }
+
+  if (role === "ai" && toolTrace?.length) {
+    const details = document.createElement("details");
+    details.className = "agent-trace";
+    const completed = toolTrace.filter(item => item.tool !== "load_tools");
+    details.innerHTML = `<summary>Work performed · ${completed.length} tool${completed.length === 1 ? "" : "s"}</summary>`;
+    const list = document.createElement("ol");
+    for (const item of completed) {
+      const row = document.createElement("li");
+      const failed = Boolean(item.result?.error);
+      row.innerHTML = `<span>${escapeHtml((item.tool || "unknown").replaceAll("_", " "))}</span><em class="${failed ? "failed" : "ok"}">${failed ? "failed" : "completed"}</em>`;
+      list.appendChild(row);
+    }
+    details.appendChild(list);
+    bubble.appendChild(details);
   }
 
   const label = camerasUsedLabel(camerasUsed);
@@ -733,7 +749,7 @@ el.chatForm.addEventListener("submit", async (e) => {
         el.chatLog.scrollTop = el.chatLog.scrollHeight;
       }
     });
-    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot, scope: data.scope, evidence: data.evidence, pendingActions: data.pending_actions });
+    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot, scope: data.scope, evidence: data.evidence, pendingActions: data.pending_actions, toolTrace: data.tool_trace });
     const resultType = data.evidence?.length ? `${data.evidence.length} evidence item${data.evidence.length === 1 ? "" : "s"}` : data.snapshot ? "Evidence attached" : (data.scope || "Completed");
     progress.textContent = `Agent complete · ${data.elapsed_seconds}s · ${resultType}`;
   } catch (err) {

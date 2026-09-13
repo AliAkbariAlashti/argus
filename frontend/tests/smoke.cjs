@@ -37,12 +37,13 @@ const assert = require('node:assert/strict');
       body: event('status', { text: 'Test fixture' })
         + event('token', { text: 'Fixture answer: ' })
         + event('token', { text: 'camera frame received.' })
-        + event('answer', { answer: 'Fixture answer: camera frame received.', cameras_used: [sources[0].id], snapshot, elapsed_seconds: 1 })
+        + event('answer', { answer: 'Fixture answer: camera frame received.', cameras_used: [sources[0].id], snapshot, elapsed_seconds: 1, tool_trace: [{tool:'inspect_live_cameras',result:{answer:'fixture'}}] })
         + event('done', {}),
     }));
     await page.locator('#chat-input').fill('Describe this test frame');
     await page.locator('#chat-send').click();
     await page.getByText('Agent complete · 1s · Evidence attached').waitFor();
+    assert.match(await page.locator('.agent-trace').last().innerText(), /Work performed · 1 tool/i);
     await page.locator('.msg-snapshot').last().click();
     assert(await page.locator('#evidence-dialog').isVisible());
     await page.keyboard.press('Escape');

@@ -2089,6 +2089,14 @@ button { color:inherit; }
 .agent-action.approved { border-color:#315f49; }
 .agent-action.failed { border-color:#713d3d; }
 .agent-action-controls { display:flex; align-items:center; gap:7px; flex:none; }
+.agent-trace { margin-top:12px; max-width:520px; color:var(--text-dim); font-size:11px; }
+.agent-trace summary { cursor:pointer; font-family:var(--font-mono); text-transform:uppercase; letter-spacing:.04em; }
+.agent-trace ol { display:grid; gap:5px; margin:8px 0 0; padding-left:20px; }
+.agent-trace li { padding-left:3px; }
+.agent-trace li span { color:var(--text); text-transform:capitalize; }
+.agent-trace li em { margin-left:8px; font:9px var(--font-mono); font-style:normal; text-transform:uppercase; }
+.agent-trace li em.ok { color:#75c89d; }
+.agent-trace li em.failed { color:#e18080; }
 .agent-planner-form { display:grid; grid-template-columns:2fr 1.4fr 1fr 130px; align-items:end; gap:12px; margin-top:18px; }
 .agent-planner-form .check-field,.agent-planner-form .modal-actions,.agent-planner-form .runtime-message { grid-column:1/-1; }
 @media(max-width:900px) { .agent-planner-form { grid-template-columns:1fr 1fr; } }
