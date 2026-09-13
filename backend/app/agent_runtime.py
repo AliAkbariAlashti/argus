@@ -8,9 +8,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+import cv2
 from sqlalchemy import func
 
-from .config import AGENT_API_KEY, AGENT_BASE_URL, AGENT_FAILURE_COOLDOWN_SECONDS, AGENT_MAX_STEPS, AGENT_MODEL, AGENT_TIMEOUT_SECONDS
+from .config import AGENT_API_KEY, AGENT_BASE_URL, AGENT_FAILURE_COOLDOWN_SECONDS, AGENT_MAX_STEPS, AGENT_MODEL, AGENT_TIMEOUT_SECONDS, VIDEOS_DIR
 from .agent_actions import create_proposal
 from .cpu import CpuSettings
 from .imaging import frame_to_pil, image_to_data_uri
@@ -46,6 +47,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "propose_delete_camera", "description": "Prepare deleting an RTSP camera for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["camera_id"], "properties": {"camera_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_activate_ai_setup", "description": "Prepare activating a saved vision-model setup for confirmation.", "parameters": {"type": "object", "required": ["profile_id"], "properties": {"profile_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "inspect_live_cameras", "description": "Ask the vision model to inspect current frames. Use only when pixels must be examined, after identifying relevant cameras.", "parameters": {"type": "object", "required": ["camera_ids", "question"], "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "list_recordings", "description": "List uploaded camera recordings with duration, frame rate, and availability.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "inspect_recording", "description": "Inspect selected timestamps from one uploaded recording with the vision model.", "parameters": {"type": "object", "required": ["camera_id", "offset_seconds", "question"], "properties": {"camera_id": {"type": "string"}, "offset_seconds": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 1, "maxItems": 6}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
 ]
 
 TOOL_BY_NAME = {item["function"]["name"]: item for item in TOOLS}
@@ -315,6 +318,56 @@ class AgentRuntime:
                 row = db.get(CpuConfig, camera.id)
                 data.append({"camera_id": camera.id, "camera_name": camera.name, "settings": CpuSettings(**(row.settings if row else {})).model_dump()})
             return {"cameras": data}, [camera.id for camera in selected], None
+        if name == "list_recordings":
+            recordings = []
+            for camera in selected:
+                if camera.source_type != "file":
+                    continue
+                path = (VIDEOS_DIR / camera.source_path).resolve()
+                available = path.is_file() and path.parent == VIDEOS_DIR.resolve()
+                fps = frames = 0.0
+                if available:
+                    capture = cv2.VideoCapture(str(path))
+                    try:
+                        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
+                        frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                    finally:
+                        capture.release()
+                recordings.append({"camera_id": camera.id, "camera_name": camera.name, "available": available,
+                                   "duration_seconds": round(frames / fps, 2) if fps > 0 else None,
+                                   "fps": round(fps, 2) if fps > 0 else None})
+            return {"recordings": recordings}, [item["camera_id"] for item in recordings], None
+        if name == "inspect_recording":
+            camera = by_id.get(args.get("camera_id"))
+            if camera is None or camera.source_type != "file":
+                return {"error": "Choose a camera with an uploaded recording."}, [], None
+            if not vlm.ready:
+                return {"error": vlm.error or "Vision model is not ready."}, [], None
+            path = (VIDEOS_DIR / camera.source_path).resolve()
+            if path.parent != VIDEOS_DIR.resolve() or not path.is_file():
+                return {"error": "Recording file is unavailable."}, [], None
+            capture = cv2.VideoCapture(str(path))
+            fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
+            frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            duration = frame_count / fps if fps > 0 else 0
+            images, offsets = [], []
+            try:
+                for raw_offset in args.get("offset_seconds", [])[:6]:
+                    offset = float(raw_offset)
+                    if duration and offset > duration:
+                        continue
+                    capture.set(cv2.CAP_PROP_POS_MSEC, offset * 1000)
+                    ok, frame = capture.read()
+                    if ok and frame is not None:
+                        images.append(frame_to_pil(frame)); offsets.append(round(offset, 2))
+            finally:
+                capture.release()
+            if not images:
+                return {"error": "No frames could be read at those recording timestamps.", "duration_seconds": round(duration, 2)}, [], None
+            prompt = f"Frames are from {camera.name} at offsets {offsets} seconds, in order. Answer only from these recording frames. {args['question']}"
+            answer = vlm.ask(images, prompt, max_new_tokens=512)
+            return {"answer": answer, "camera_id": camera.id, "camera_name": camera.name,
+                    "offset_seconds": offsets, "duration_seconds": round(duration, 2)}, [camera.id], image_to_data_uri(images[0])
         proposal_map = {
             "propose_alert_rule": ("create_alert_rule", f"Create {args.get('source', 'vlm')} alert for {args.get('target', '')}"),
             "propose_update_alert_rule": ("update_alert_rule", f"Change alert rule {args.get('rule_id', '')}"),

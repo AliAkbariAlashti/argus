@@ -2,6 +2,8 @@
 """Run reproducible black-box checks against a live Argus agent."""
 import argparse
 import json
+import socket
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -15,16 +17,35 @@ def request(base, path, method="GET", payload=None, timeout=180):
         return json.load(response)
 
 
+def stream_answer(base, payload, timeout=300):
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(base + "/api/chat/stream", data=body, method="POST", headers={"Content-Type": "application/json"})
+    event = None
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        for raw in response:
+            line = raw.decode().rstrip("\r\n")
+            if line.startswith("event: "):
+                event = line[7:]
+            elif line.startswith("data: "):
+                data = json.loads(line[6:])
+                if event == "answer":
+                    return data
+                if event == "error":
+                    raise RuntimeError(data.get("detail") or "Agent stream failed.")
+    raise RuntimeError("Agent stream ended without an answer.")
+
+
 def run(base, scenarios):
     results = []
     status = request(base, "/api/agent/status")
     if not status.get("configured"):
         raise RuntimeError("Argus instruction model is not configured.")
     for scenario in scenarios:
+        print(f"Running {scenario['name']}…", file=sys.stderr, flush=True)
         session = request(base, "/api/chat/sessions", "POST", {})
         started = time.monotonic()
         try:
-            answer = request(base, "/api/chat", "POST", {"question": scenario["question"], "session_id": session["id"]}, timeout=scenario.get("max_seconds", 90) + 30)
+            answer = stream_answer(base, {"question": scenario["question"], "session_id": session["id"]})
             elapsed = round(time.monotonic() - started, 2)
             tools = [item.get("tool") for item in answer.get("tool_trace", [])]
             failures = []
@@ -36,7 +57,7 @@ def run(base, scenarios):
             if not answer.get("answer", "").strip(): failures.append("empty answer")
             results.append({"name": scenario["name"], "passed": not failures, "elapsed_seconds": elapsed,
                             "tools": tools, "failures": failures, "answer": answer.get("answer")})
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, socket.timeout, RuntimeError) as exc:
             results.append({"name": scenario["name"], "passed": False, "failures": [str(exc)]})
         finally:
             try: request(base, f"/api/chat/sessions/{session['id']}", "DELETE")

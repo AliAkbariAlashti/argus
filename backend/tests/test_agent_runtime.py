@@ -11,6 +11,17 @@ def fake_db():
     return SimpleNamespace(add=lambda row: None, commit=lambda: None)
 
 
+class FakeCameraQuery:
+    def __init__(self, rows): self.rows = rows
+    def order_by(self, *_args): return self
+    def all(self): return self.rows
+
+
+class FakeCameraDb:
+    def __init__(self, rows): self.rows = rows
+    def query(self, *_args): return FakeCameraQuery(self.rows)
+
+
 def test_unconfigured_agent_is_unavailable():
     runtime = AgentRuntime(base_url="", model="")
     assert runtime.public_status()["configured"] is False
@@ -114,6 +125,20 @@ def test_camera_health_is_compact_for_model_context():
                             "tracked_counts": {"person": 1}}}]}
     compact = AgentRuntime._model_result("get_camera_health", result)
     assert compact["cameras"] == [["cam-1", "Lobby", True, 20, True, [], {"person": 1}, None]]
+
+
+def test_list_recordings_reports_duration_without_exposing_path(tmp_path, monkeypatch):
+    recording = tmp_path / "camera.mp4"
+    recording.touch()
+    camera = SimpleNamespace(id="cam-1", name="Lobby", source_type="file", source_path=recording.name, created_at=None)
+    capture = SimpleNamespace(get=lambda prop: 20 if prop == 5 else 200, release=lambda: None)
+    monkeypatch.setattr("app.agent_runtime.VIDEOS_DIR", tmp_path)
+    monkeypatch.setattr("app.agent_runtime.cv2.VideoCapture", lambda _path: capture)
+    runtime = AgentRuntime(base_url="", model="")
+    result, used, _ = runtime._run_tool("list_recordings", {}, FakeCameraDb([camera]), object(), object(), object())
+    assert result == {"recordings": [{"camera_id": "cam-1", "camera_name": "Lobby", "available": True, "duration_seconds": 10.0, "fps": 20.0}]}
+    assert used == ["cam-1"]
+    assert str(recording) not in str(result)
 
 
 def test_failed_endpoint_enters_fast_fallback_cooldown(monkeypatch):
