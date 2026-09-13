@@ -17,12 +17,15 @@ def request(base, path, method="GET", payload=None, timeout=180):
         return json.load(response)
 
 
-def stream_answer(base, payload, timeout=300):
+def stream_answer(base, payload, timeout=300, total_timeout=None):
     body = json.dumps(payload).encode()
     req = urllib.request.Request(base + "/api/chat/stream", data=body, method="POST", headers={"Content-Type": "application/json"})
     event = None
+    deadline = time.monotonic() + (total_timeout or timeout)
     with urllib.request.urlopen(req, timeout=timeout) as response:
         for raw in response:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Agent exceeded {total_timeout or timeout}s wall-clock limit.")
             line = raw.decode().rstrip("\r\n")
             if line.startswith("event: "):
                 event = line[7:]
@@ -60,7 +63,8 @@ def run(base, scenarios):
             turns = scenario.get("turns") or [scenario]
             for index, turn in enumerate(turns, 1):
                 started = time.monotonic()
-                answer = stream_answer(base, {"question": turn["question"], "session_id": session["id"]})
+                limit = turn.get("max_seconds", scenario.get("max_seconds", 90))
+                answer = stream_answer(base, {"question": turn["question"], "session_id": session["id"]}, total_timeout=limit + 30)
                 elapsed = round(time.monotonic() - started, 2)
                 name = scenario["name"] if len(turns) == 1 else f"{scenario['name']} / turn {index}"
                 results.append(assess(name, answer, {**scenario, **turn}, elapsed))

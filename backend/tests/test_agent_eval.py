@@ -33,7 +33,7 @@ def test_eval_reuses_one_session_for_follow_up_turns(monkeypatch):
         if path == "/api/chat/sessions": created.append(1); return {"id": "same-session"}
         return {}
     payloads = []
-    def fake_stream(base, payload, timeout=300):
+    def fake_stream(base, payload, timeout=300, total_timeout=None):
         payloads.append(payload)
         return {"scope": "agent", "answer": "ok", "tool_trace": [{"tool": "list_cameras"}]}
     monkeypatch.setattr(run_agent_eval, "request", fake_request)

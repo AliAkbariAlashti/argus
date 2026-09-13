@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import httpx
 
-from app.agent_runtime import AgentRuntime, AgentUnavailable
+from app.agent_runtime import AgentRuntime, AgentUnavailable, TOOL_CATALOG
 
 
 def fake_db():
@@ -27,6 +27,11 @@ def test_unconfigured_agent_is_unavailable():
     assert runtime.public_status()["configured"] is False
     with pytest.raises(AgentUnavailable, match="is configured"):
         runtime._complete([])
+
+
+def test_compact_catalog_exposes_required_and_optional_arguments():
+    assert "inspect_recording(camera_id,offset_seconds,question)" in TOOL_CATALOG
+    assert "get_camera_health(camera_ids?)" in TOOL_CATALOG
 
 
 def test_agent_runs_multiple_tools_then_answers(monkeypatch):

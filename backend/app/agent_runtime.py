@@ -52,7 +52,17 @@ TOOLS = [
 ]
 
 TOOL_BY_NAME = {item["function"]["name"]: item for item in TOOLS}
-TOOL_CATALOG = ", ".join(TOOL_BY_NAME)
+
+
+def _tool_hint(item):
+    function = item["function"]
+    parameters = function.get("parameters") or {}
+    required = set(parameters.get("required") or [])
+    arguments = ",".join(name if name in required else f"{name}?" for name in (parameters.get("properties") or {}))
+    return f"{function['name']}({arguments})"
+
+
+TOOL_CATALOG = "; ".join(_tool_hint(item) for item in TOOLS)
 LOAD_TOOLS = {"type": "function", "function": {"name": "load_tools", "description": "Load schemas by exact names from the system catalog.", "parameters": {"type": "object", "required": ["names"], "properties": {"names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}}, "additionalProperties": False}}}
 CALL_ARGUS_TOOL = {"type": "function", "function": {"name": "call_argus_tool", "description": "Call one exact tool from the system catalog.", "parameters": {"type": "object", "required": ["name", "arguments"], "properties": {"name": {"type": "string"}, "arguments": {"type": "object"}}, "additionalProperties": False}}}
 
