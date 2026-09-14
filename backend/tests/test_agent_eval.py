@@ -45,3 +45,33 @@ def test_eval_reuses_one_session_for_follow_up_turns(monkeypatch):
     assert all(item["passed"] for item in result)
     assert created == [1]
     assert [item["session_id"] for item in payloads] == ["same-session", "same-session"]
+
+
+def test_eval_accepts_any_equivalent_expected_tool():
+    result = run_agent_eval.assess("health", {"scope": "agent", "answer": "ok", "tool_trace": [{"tool": "list_cameras"}]}, {"expected_any_tools": ["list_cameras", "get_camera_health"]}, 1)
+    assert result["passed"] is True
+
+
+def test_eval_rejects_confirmation_with_missing_required_arguments():
+    answer = {"scope": "agent", "answer": "prepared", "tool_trace": [{"tool": "propose_alert_rule"}],
+              "pending_actions": [{"action": "create_alert_rule", "arguments": {"target": ""}}]}
+    result = run_agent_eval.assess("action", answer, {"expects_confirmation": True,
+        "expected_action": "create_alert_rule", "required_action_arguments": ["target"]}, 1)
+    assert result["passed"] is False
+    assert "missing action argument target" in result["failures"]
+
+
+def test_eval_checks_action_argument_meaning():
+    answer = {"scope": "agent", "answer": "prepared", "tool_trace": [{"tool": "propose_alert_rule"}],
+              "pending_actions": [{"action": "create_alert_rule", "arguments": {"target": "all cameras"}}]}
+    result = run_agent_eval.assess("action", answer, {"action_argument_contains": {"target": "backpack"}}, 1)
+    assert result["passed"] is False
+    assert "action argument target does not contain backpack" in result["failures"]
+
+
+def test_eval_checks_answer_content():
+    answer = {"scope": "agent", "answer": "One or more camera IDs do not exist.", "tool_trace": []}
+    result = run_agent_eval.assess("recordings", answer, {"answer_contains": ["recordings", "FPS"]}, 1)
+    assert result["passed"] is False
+    assert "answer does not contain recordings" in result["failures"]
+    assert "answer does not contain FPS" in result["failures"]

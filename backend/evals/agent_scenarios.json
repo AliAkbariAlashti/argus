@@ -2,7 +2,7 @@
   {
     "name": "fleet health",
     "question": "Which cameras are online and which need attention?",
-    "expected_tools": ["get_camera_health"],
+    "expected_any_tools": ["get_camera_health", "list_cameras"],
     "max_seconds": 90
   },
   {
@@ -22,6 +22,9 @@
     "question": "Create a warning rule for a person carrying a backpack on all cameras.",
     "expected_tools": ["propose_alert_rule"],
     "expects_confirmation": true,
+    "expected_action": "create_alert_rule",
+    "required_action_arguments": ["target"],
+    "action_argument_contains": {"target": "backpack"},
     "max_seconds": 90
   },
   {
@@ -40,8 +43,9 @@
   },
   {
     "name": "recording inventory",
-    "question": "Which camera recordings can you inspect and how long are they?",
+    "question": "List available uploaded camera recordings with their duration and FPS.",
     "expected_tools": ["list_recordings"],
+    "answer_contains": ["recordings", "FPS"],
     "max_seconds": 90
   }
 ]

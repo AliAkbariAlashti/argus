@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import httpx
 
-from app.agent_runtime import AgentRuntime, AgentUnavailable, TOOL_CATALOG
+from app.agent_runtime import AgentRuntime, AgentUnavailable, CALL_ARGUS_TOOL, TOOL_CATALOG
 
 
 def fake_db():
@@ -32,6 +32,7 @@ def test_unconfigured_agent_is_unavailable():
 def test_compact_catalog_exposes_required_and_optional_arguments():
     assert "inspect_recording(camera_id,offset_seconds,question)" in TOOL_CATALOG
     assert "get_camera_health(camera_ids?)" in TOOL_CATALOG
+    assert "Get live stream and CPU-analysis health" in TOOL_CATALOG
 
 
 def test_agent_runs_multiple_tools_then_answers(monkeypatch):
@@ -113,14 +114,57 @@ def test_ollama_uses_single_step_generic_dispatch(monkeypatch):
     runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
     replies = iter([
         {"role": "assistant", "tool_calls": [{"id": "a", "function": {"name": "call_argus_tool", "arguments": json.dumps({"name": "get_camera_health", "arguments": {}})}}]},
-        {"role": "assistant", "content": "All cameras are online."},
     ])
     monkeypatch.setattr(runtime, "_complete", lambda messages, tools=None, on_token=None: next(replies))
     calls = []
     monkeypatch.setattr(runtime, "_run_tool", lambda name, args, *rest: (calls.append((name, args)) or {"ok": True}, [], None))
     result = runtime.answer("Which cameras are online?", [], fake_db(), object(), object(), object())
     assert calls == [("get_camera_health", {})]
-    assert result["answer"] == "All cameras are online."
+    assert result["answer"] == "0 of 0 cameras are online."
+
+
+def test_ollama_constrained_plan_becomes_validated_dispatch(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    packets = iter([
+        {"message": {"role": "assistant", "content": json.dumps({"tool": "get_camera_health", "answer": ""})}},
+        {"message": {"role": "assistant", "content": '{"camera_ids":[]}'}}
+    ])
+    seen = []
+    def post(url, **kwargs):
+        seen.append(kwargs["json"])
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: next(packets))
+    monkeypatch.setattr("app.agent_runtime.httpx.post", post)
+    message = runtime._complete([{"role": "user", "content": "health"}], [CALL_ARGUS_TOOL])
+    arguments = json.loads(message["tool_calls"][0]["function"]["arguments"])
+    assert arguments == {"name": "get_camera_health", "arguments": {}}
+    assert "tools" not in seen[0]
+    assert seen[0]["format"]["properties"]["tool"]["enum"]
+    assert seen[1]["format"]["properties"]["camera_ids"]
+
+
+def test_ollama_argument_extraction_drops_ungrounded_camera_ids(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    monkeypatch.setattr("app.agent_runtime.httpx.post", lambda *args, **kwargs: SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"message": {"content": json.dumps({"camera_ids": ["camera1", "camera2"]})}},
+    ))
+    result = runtime._ollama_extract_arguments(
+        [{"role": "user", "content": "Give me an exact activity report for the last 24 hours."}],
+        "get_activity_report",
+    )
+    assert result == {}
+
+
+def test_ollama_argument_extraction_keeps_grounded_camera_ids(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    monkeypatch.setattr("app.agent_runtime.httpx.post", lambda *args, **kwargs: SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"message": {"content": json.dumps({"camera_ids": ["camera-123", "invented"]})}},
+    ))
+    result = runtime._ollama_extract_arguments(
+        [{"role": "user", "content": "Check camera-123."}], "get_camera_health"
+    )
+    assert result == {"camera_ids": ["camera-123"]}
 
 
 def test_camera_health_is_compact_for_model_context():
@@ -130,6 +174,24 @@ def test_camera_health_is_compact_for_model_context():
                             "tracked_counts": {"person": 1}}}]}
     compact = AgentRuntime._model_result("get_camera_health", result)
     assert compact["cameras"] == [["cam-1", "Lobby", True, 20, True, [], {"person": 1}, None]]
+
+
+def test_exact_operational_result_does_not_need_second_model_call(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    reply = {"role": "assistant", "tool_calls": [{"id": "a", "function": {"name": "call_argus_tool", "arguments": json.dumps({"name": "list_cameras", "arguments": {}})}}]}
+    calls = []
+    monkeypatch.setattr(runtime, "_complete", lambda *args, **kwargs: calls.append(1) or reply)
+    monkeypatch.setattr(runtime, "_run_tool", lambda *args: ({"cameras": [{"name": "Lobby", "location": "Main", "online": True}]}, ["cam-1"], None))
+    result = runtime.answer("list", [], fake_db(), object(), object(), object())
+    assert calls == [1]
+    assert "Lobby (Main) — online" in result["answer"]
+
+
+def test_required_tool_arguments_are_rejected_before_execution():
+    runtime = AgentRuntime(base_url="", model="")
+    result, used, evidence = runtime._run_tool("propose_alert_rule", {}, FakeCameraDb([]), object(), object(), object())
+    assert result == {"error": "Missing required tool arguments: target."}
+    assert used == [] and evidence is None
 
 
 def test_list_recordings_reports_duration_without_exposing_path(tmp_path, monkeypatch):

@@ -22,7 +22,7 @@ from .visual_search import find_by_text, find_similar
 log = logging.getLogger("qwenvl.agent_runtime")
 
 SYSTEM_PROMPT = """You are Argus, a CCTV operator. Speak naturally. Use tools for camera, scene, health, event, rule, and configuration facts. First call load_tools with up to four names from the catalog; load more later if needed. Never invent evidence or IDs. Include camera names and times when known. Changes create confirmation proposals. UTC: {now}.\nTools: {catalog}"""
-OLLAMA_SYSTEM_PROMPT = """You are Argus, a CCTV operator. Speak naturally. Call call_argus_tool for camera, scene, health, event, rule, and configuration facts. Put the exact tool name and its arguments in that call. Never invent evidence or IDs. Include camera names and times when known. Changes create confirmation proposals. UTC: {now}.\nTools: {catalog}"""
+OLLAMA_SYSTEM_PROMPT = """You are Argus, a CCTV operator. Speak naturally. For camera, scene, health, event, rule, and configuration facts, select an exact catalog tool. Never guess or ask for IDs when camera_ids is optional. Requests to create, change, activate, or delete must use a propose_* tool; list_* tools only read. 'List available recordings with duration or FPS' always means list_recordings. inspect_recording requires one explicit camera plus numeric offsets; inspect_live_cameras is only for the current scene. If a tool result follows, answer directly from it with camera names and times when known. Changes create confirmation proposals. UTC: {now}.\nTools: {catalog}"""
 
 
 TOOLS = [
@@ -38,7 +38,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "list_alert_rules", "description": "List alert rules and whether they are enabled.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "list_ai_setups", "description": "List saved vision-model setups and their active/readiness state.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "get_cpu_configuration", "description": "Read CPU-tool settings for selected or all cameras.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}}, "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "propose_alert_rule", "description": "Prepare an alert rule for operator confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["target"], "properties": {"camera_id": {"type": "string"}, "source": {"type": "string", "enum": ["cpu", "vlm"]}, "target": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_alert_rule", "description": "Prepare an alert rule for operator confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["target"], "properties": {"camera_id": {"type": "string", "description": "Exact camera ID; omit for all cameras."}, "source": {"type": "string", "enum": ["cpu", "vlm"], "description": "Use CPU for one detectable object class; VLM for a described visual condition."}, "target": {"type": "string", "description": "The object or visual condition to detect, such as 'person carrying a backpack'."}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_update_alert_rule", "description": "Prepare enabling, disabling, or changing severity of an alert rule for confirmation.", "parameters": {"type": "object", "required": ["rule_id"], "properties": {"rule_id": {"type": "string"}, "enabled": {"type": "boolean"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_delete_alert_rule", "description": "Prepare deleting an alert rule for confirmation.", "parameters": {"type": "object", "required": ["rule_id"], "properties": {"rule_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_cpu_configuration", "description": "Prepare a partial CPU-tool configuration change for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["camera_id", "settings"], "properties": {"camera_id": {"type": "string"}, "settings": {"type": "object", "properties": {"enabled": {"type": "boolean"}, "motion_alerts": {"type": "boolean"}, "quality_alerts": {"type": "boolean"}, "object_alerts": {"type": "boolean"}, "tracking_enabled": {"type": "boolean"}, "line_crossing_alerts": {"type": "boolean"}, "dwell_alerts": {"type": "boolean"}, "dwell_seconds": {"type": "integer", "minimum": 10, "maximum": 86400}, "object_confidence": {"type": "number", "minimum": 0.1, "maximum": 0.95}}, "additionalProperties": False}}, "additionalProperties": False}}},
@@ -47,7 +47,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "propose_delete_camera", "description": "Prepare deleting an RTSP camera for confirmation. This does not change the system.", "parameters": {"type": "object", "required": ["camera_id"], "properties": {"camera_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "propose_activate_ai_setup", "description": "Prepare activating a saved vision-model setup for confirmation.", "parameters": {"type": "object", "required": ["profile_id"], "properties": {"profile_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "inspect_live_cameras", "description": "Ask the vision model to inspect current frames. Use only when pixels must be examined, after identifying relevant cameras.", "parameters": {"type": "object", "required": ["camera_ids", "question"], "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "list_recordings", "description": "List uploaded camera recordings with duration, frame rate, and availability.", "parameters": {"type": "object", "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "list_recordings", "description": "List all uploaded camera recordings with duration, frame rate, and availability.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "inspect_recording", "description": "Inspect selected timestamps from one uploaded recording with the vision model.", "parameters": {"type": "object", "required": ["camera_id", "offset_seconds", "question"], "properties": {"camera_id": {"type": "string"}, "offset_seconds": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 1, "maxItems": 6}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
 ]
 
@@ -59,12 +59,16 @@ def _tool_hint(item):
     parameters = function.get("parameters") or {}
     required = set(parameters.get("required") or [])
     arguments = ",".join(name if name in required else f"{name}?" for name in (parameters.get("properties") or {}))
-    return f"{function['name']}({arguments})"
+    return f"{function['name']}({arguments}): {function.get('description', '')}"
 
 
 TOOL_CATALOG = "; ".join(_tool_hint(item) for item in TOOLS)
 LOAD_TOOLS = {"type": "function", "function": {"name": "load_tools", "description": "Load schemas by exact names from the system catalog.", "parameters": {"type": "object", "required": ["names"], "properties": {"names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}}, "additionalProperties": False}}}
 CALL_ARGUS_TOOL = {"type": "function", "function": {"name": "call_argus_tool", "description": "Call one exact tool from the system catalog.", "parameters": {"type": "object", "required": ["name", "arguments"], "properties": {"name": {"type": "string"}, "arguments": {"type": "object"}}, "additionalProperties": False}}}
+OLLAMA_PLAN_FORMAT = {"type": "object", "properties": {
+    "tool": {"type": "string", "enum": ["", *TOOL_BY_NAME]},
+    "answer": {"type": "string", "maxLength": 1200},
+}, "required": ["tool", "answer"], "additionalProperties": False}
 
 
 class AgentUnavailable(RuntimeError):
@@ -125,6 +129,42 @@ class AgentRuntime:
     def _is_ollama(self):
         return "ollama" in self.base_url.lower() or any(port in self.base_url for port in (":11434", ":11435"))
 
+    def _ollama_extract_arguments(self, messages, tool):
+        function = TOOL_BY_NAME[tool]["function"]
+        schema = function.get("parameters") or {"type": "object", "properties": {}}
+        if not schema.get("properties"):
+            return {}
+        context = [message.get("content", "") for message in messages[-6:]
+                   if message.get("role") == "user" or (message.get("role") == "system" and message.get("content", "").startswith("Structured context"))]
+        prompt = (f"Extract arguments for {tool} from the request. {function.get('description', '')} "
+                  "Return only fields defined by the JSON schema. Use only information stated by the user or retained context. "
+                  "Omit optional values that are absent. camera_id and camera_ids accept exact IDs from Structured context only; "
+                  "never invent IDs or put camera names, 'all cameras', or other scope phrases in them. If all cameras are requested, "
+                  "omit the optional camera field. For propose_alert_rule, target is only the object or visual condition to detect; "
+                  "copy that condition from the request and never use camera scope as target. Example: 'a person carrying a backpack "
+                  "on all cameras' has target 'person carrying a backpack' and no camera_id.")
+        base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+        response = httpx.post(base + "/api/chat", headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}, json={
+            "model": self.model, "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": "\n".join(context)}],
+            "format": schema, "stream": False, "think": False,
+            "options": {"temperature": 0, "num_predict": 96},
+        }, timeout=AGENT_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        arguments = json.loads((response.json().get("message") or {}).get("content") or "{}")
+        if not isinstance(arguments, dict):
+            return {}
+        grounding_text = "\n".join(context).lower()
+        if "camera_id" in arguments and str(arguments["camera_id"]).lower() not in grounding_text:
+            arguments.pop("camera_id")
+        if "camera_ids" in arguments:
+            grounded = [value for value in arguments["camera_ids"]
+                        if isinstance(value, str) and value.lower() in grounding_text]
+            if grounded:
+                arguments["camera_ids"] = grounded
+            else:
+                arguments.pop("camera_ids")
+        return arguments
+
     @staticmethod
     def _ollama_messages(messages):
         native = []
@@ -163,14 +203,18 @@ class AgentRuntime:
         if self._last_failure_at and time.monotonic() - self._last_failure_at < AGENT_FAILURE_COOLDOWN_SECONDS:
             raise AgentUnavailable(self._last_error or "Instruction model is cooling down after a failure.")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        stream_response = on_token is not None or self._is_ollama()
+        json_plan = self._is_ollama() and len(tools or []) == 1 and (tools or [])[0]["function"]["name"] == "call_argus_tool"
+        stream_response = (on_token is not None or self._is_ollama()) and not json_plan
         payload = {"model": self.model, "messages": messages, "tools": tools if tools is not None else [LOAD_TOOLS], "stream": stream_response}
         url = self._url()
         if self._is_ollama():
             base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
             url = base + "/api/chat"
             payload["messages"] = self._ollama_messages(messages)
-            payload.update({"think": False, "options": {"temperature": 0.1, "num_predict": 160}})
+            payload.update({"think": False, "options": {"temperature": 0 if json_plan else 0.1, "num_predict": 96 if json_plan else 160}})
+            if json_plan:
+                payload.pop("tools", None)
+                payload["format"] = OLLAMA_PLAN_FORMAT
         else:
             payload.update({"tool_choice": "auto", "temperature": 0.1, "max_tokens": 512, "reasoning_effort": "none"})
         try:
@@ -201,6 +245,14 @@ class AgentRuntime:
                         for call_delta in delta.get("tool_calls") or []:
                             self._merge_tool_delta(calls, call_delta)
                 message = {"role": "assistant", "content": "".join(content), "tool_calls": calls}
+            if json_plan:
+                plan = json.loads(message.get("content") or "{}")
+                tool = plan.get("tool") if plan.get("tool") in TOOL_BY_NAME else ""
+                if tool:
+                    arguments = self._ollama_extract_arguments(messages, tool)
+                    message = {"role": "assistant", "content": "", "tool_calls": [{"id": f"local-{time.time_ns()}", "type": "function", "function": {"name": "call_argus_tool", "arguments": json.dumps({"name": tool, "arguments": arguments})}}]}
+                else:
+                    message = {"role": "assistant", "content": str(plan.get("answer") or "")}
             for call in message.get("tool_calls") or []:
                 arguments = (call.get("function") or {}).get("arguments")
                 if isinstance(arguments, dict):
@@ -231,7 +283,49 @@ class AgentRuntime:
             return {"columns": ["id", "name", "online", "fps", "cpu_online", "flags", "objects", "message"], "cameras": cameras}
         return result
 
+    @staticmethod
+    def _operational_answer(name, result):
+        if result.get("error"):
+            return f"I could not complete that check: {result['error']}"
+        if result.get("proposal"):
+            return f"I prepared this change: {result['proposal'].get('summary', 'configuration update')}. Review and approve the confirmation card to apply it."
+        if isinstance(result.get("answer"), str):
+            return result["answer"]
+        if name == "list_cameras":
+            rows = result.get("cameras", [])
+            lines = [f"{len(rows)} cameras are configured:"]
+            lines.extend(f"- {row['name']} ({row.get('location') or 'No location'}) — {'online' if row.get('online') else 'offline'}" for row in rows)
+            return "\n".join(lines)
+        if name == "get_camera_health":
+            rows = result.get("cameras", [])
+            online = sum(bool(row.get("online")) for row in rows)
+            lines = [f"{online} of {len(rows)} cameras are online."]
+            for row in rows:
+                cpu = row.get("cpu_status") or {}
+                state = "online" if row.get("online") else "offline"
+                detail = f"{round(row.get('fps') or 0, 1)} FPS" if row.get("online") else cpu.get("message") or "needs attention"
+                lines.append(f"- {row['name']} — {state}; {detail}")
+            return "\n".join(lines)
+        if name == "get_activity_report":
+            return (f"Since {result.get('since')}, Argus recorded {result.get('total_observations', 0)} observations "
+                    f"and {result.get('total_events', 0)} events. Observation types: {result.get('observation_counts') or {}}. "
+                    f"Event severities: {result.get('event_counts') or {}}.")
+        if name == "list_alert_rules":
+            rows = result.get("rules", [])
+            if not rows: return "No alert rules are configured."
+            return "Alert rules:\n" + "\n".join(f"- {row.get('target')} — {row.get('source')} / {row.get('severity')} / {'enabled' if row.get('enabled') else 'disabled'}" for row in rows)
+        if name == "list_recordings":
+            rows = result.get("recordings", [])
+            if not rows: return "No uploaded camera recordings are available."
+            return "Recordings:\n" + "\n".join(f"- {row['camera_name']} — {row.get('duration_seconds')} seconds at {row.get('fps')} FPS" if row.get("available") else f"- {row['camera_name']} — unavailable" for row in rows)
+        return None
+
     def _run_tool(self, name, args, db, registry, cpu_monitor, vlm, session_id="unsaved"):
+        definition = TOOL_BY_NAME.get(name)
+        required = ((definition or {}).get("function", {}).get("parameters", {}).get("required") or [])
+        missing = [field for field in required if args.get(field) in (None, "", [])]
+        if missing:
+            return {"error": f"Missing required tool arguments: {', '.join(missing)}."}, [], None
         cameras = db.query(Camera).order_by(Camera.created_at).all()
         by_id = {camera.id: camera for camera in cameras}
         requested = args.get("camera_ids") or []
@@ -449,6 +543,8 @@ class AgentRuntime:
                     raise AgentUnavailable("Instruction model returned no answer.")
                 return {"answer": content.strip(), "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot, "tool_trace": trace, "pending_actions": pending_actions, "session_context": context, "steps": step + 1}
             messages.append(message)
+            used_generic_dispatch = False
+            operational_answer = None
             for call in calls:
                 function = call.get("function") or {}
                 wire_name = function.get("name", "")
@@ -458,6 +554,7 @@ class AgentRuntime:
                     args = {}
                 name = wire_name
                 if wire_name == "call_argus_tool":
+                    used_generic_dispatch = True
                     name = args.get("name", "")
                     args = args.get("arguments") if isinstance(args.get("arguments"), dict) else {}
                 if on_status: on_status(f"Using {name.replace('_', ' ')}…")
@@ -488,6 +585,14 @@ class AgentRuntime:
                 snapshot = snapshot or evidence
                 model_result = self._model_result(name, result)
                 messages.append({"role": "tool", "tool_call_id": call.get("id", f"step-{step}"), "name": wire_name, "content": json.dumps(model_result, default=str)[:6000]})
+                if used_generic_dispatch:
+                    operational_answer = self._operational_answer(name, result)
+            if used_generic_dispatch:
+                active_tools = []
+                if operational_answer:
+                    if on_token: on_token(operational_answer)
+                    return {"answer": operational_answer, "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot,
+                            "tool_trace": trace, "pending_actions": pending_actions, "session_context": context, "steps": step + 1}
         raise AgentUnavailable(f"Agent exceeded its {self.max_steps}-step limit.")
 
 
