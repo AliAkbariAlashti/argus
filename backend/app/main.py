@@ -999,7 +999,8 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
                              for item in result.get("tool_trace", [])]
             action_ids = [item.get("id") for item in result.get("pending_actions", []) if item.get("id")]
             _save_turn(db, session.id, "assistant", result["answer"], cameras_used=result["cameras_used"], snapshot=result["snapshot"],
-                       agent_data={"scope": "agent", "tool_trace": trace_summary, "pending_action_ids": action_ids})
+                       agent_data={"scope": "agent", "tool_trace": trace_summary, "pending_action_ids": action_ids,
+                                   "evidence": result.get("evidence", [])})
             return {"question": req.question, "scope": "agent", **result}
         except AgentUnavailable as exc:
             log.warning("Agent planner unavailable; using deterministic fallback: %s", exc)

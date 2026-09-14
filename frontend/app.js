@@ -439,6 +439,7 @@ async function loadChatHistory() {
         camerasUsed: row.cameras_used,
         snapshot: row.snapshot,
         scope: agentData.scope,
+        evidence: agentData.evidence,
         toolTrace: agentData.tool_trace,
         pendingActions: (agentData.pending_action_ids || []).map(id => actionsById.get(id)).filter(Boolean),
       });
@@ -562,8 +563,8 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evi
     list.className = "msg-evidence-list";
     for (const item of evidence) {
       const evidenceItem = document.createElement("span");
-      const time = item.timestamp ? new Date(item.timestamp).toLocaleString() : "Stored evidence";
-      evidenceItem.textContent = `${item.camera_name || item.camera_id} · ${time}`;
+      const time = item.timestamp ? new Date(item.timestamp).toLocaleString() : (item.label || "Stored evidence");
+      evidenceItem.textContent = `${item.camera_name || cameras.find(camera => camera.id === item.camera_id)?.name || item.camera_id || "Evidence"} · ${time}`;
       evidenceItem.title = `Observation ${item.observation_id || ""}`;
       list.appendChild(evidenceItem);
     }

@@ -144,6 +144,16 @@ def test_ollama_can_chain_tools_before_answering(monkeypatch):
     assert result["steps"] == 2
 
 
+def test_agent_builds_compact_evidence_metadata():
+    evidence = AgentRuntime._evidence_items("search_observations", {"observations": [{
+        "id": "obs-1", "camera_id": "cam-1", "observed_at": "2026-09-14T12:00:00Z",
+        "object_type": "person", "attributes": {"snapshot": "available"},
+    }]})
+    assert evidence == [{"kind": "observation", "observation_id": "obs-1", "camera_id": "cam-1",
+                         "timestamp": "2026-09-14T12:00:00Z", "label": "person"}]
+    assert "snapshot" not in str(evidence)
+
+
 def test_ollama_constrained_plan_becomes_validated_dispatch(monkeypatch):
     runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
     packets = iter([

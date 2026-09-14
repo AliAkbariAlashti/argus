@@ -360,6 +360,26 @@ class AgentRuntime:
         return None
 
     @staticmethod
+    def _evidence_items(name, result):
+        if name == "search_observations":
+            return [{"kind": "observation", "observation_id": row.get("id"), "camera_id": row.get("camera_id"),
+                     "timestamp": row.get("observed_at"), "label": row.get("object_type") or row.get("kind")}
+                    for row in result.get("observations", [])[:6]]
+        if name == "search_events":
+            return [{"kind": "event", "event_id": row.get("id"), "camera_id": row.get("camera_id"),
+                     "timestamp": row.get("created_at"), "label": row.get("summary") or row.get("category")}
+                    for row in result.get("events", [])[:6]]
+        if name == "inspect_live_cameras" and result.get("observed_at"):
+            return [{"kind": "live_frame", "camera_id": camera_id, "camera_name": camera_name,
+                     "timestamp": result["observed_at"], "label": "Live frame"}
+                    for camera_id, camera_name in zip(result.get("camera_ids", []), result.get("camera_names", []))]
+        if name == "inspect_recording":
+            return [{"kind": "recording_frame", "camera_id": result.get("camera_id"),
+                     "camera_name": result.get("camera_name"), "offset_seconds": offset,
+                     "label": f"Recording at {offset:g}s"} for offset in result.get("offset_seconds", [])]
+        return []
+
+    @staticmethod
     def _resolve_camera_arguments(args, cameras):
         """Resolve model-provided camera names to stable IDs before tool execution."""
         normalized = dict(args or {})
@@ -606,7 +626,7 @@ class AgentRuntime:
             messages.append({"role": "system", "content": "Structured context retained from this conversation. Resolve follow-ups against these stable IDs:\n" + json.dumps(context, default=str)[:12000]})
         messages.extend({"role": item["role"], "content": item["text"]} for item in history)
         messages.append({"role": "user", "content": question})
-        trace, cameras_used, snapshot, pending_actions = [], [], None, []
+        trace, cameras_used, evidence_items, snapshot, pending_actions = [], [], [], None, []
         active_tools = [CALL_ARGUS_TOOL] if self._is_ollama() else [LOAD_TOOLS]
         for step in range(self.max_steps):
             message = self._complete(messages, active_tools, on_token)
@@ -615,7 +635,8 @@ class AgentRuntime:
                 content = message.get("content")
                 if not isinstance(content, str) or not content.strip():
                     raise AgentUnavailable("Instruction model returned no answer.")
-                return {"answer": content.strip(), "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot, "tool_trace": trace, "pending_actions": pending_actions, "session_context": context, "steps": step + 1}
+                return {"answer": content.strip(), "cameras_used": list(dict.fromkeys(cameras_used)), "evidence": evidence_items,
+                        "snapshot": snapshot, "tool_trace": trace, "pending_actions": pending_actions, "session_context": context, "steps": step + 1}
             messages.append(message)
             used_generic_dispatch = False
             operational_answer = None
@@ -656,6 +677,7 @@ class AgentRuntime:
                 if result.get("proposal"):
                     pending_actions.append(result["proposal"])
                 cameras_used.extend(used)
+                evidence_items.extend(self._evidence_items(name, result))
                 snapshot = snapshot or evidence
                 model_result = self._model_result(name, result)
                 messages.append({"role": "tool", "tool_call_id": call.get("id", f"step-{step}"), "name": wire_name, "content": json.dumps(model_result, default=str)[:6000]})
@@ -664,7 +686,7 @@ class AgentRuntime:
             if used_generic_dispatch:
                 if operational_answer:
                     if on_token: on_token(operational_answer)
-                    return {"answer": operational_answer, "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot,
+                    return {"answer": operational_answer, "cameras_used": list(dict.fromkeys(cameras_used)), "evidence": evidence_items, "snapshot": snapshot,
                             "tool_trace": trace, "pending_actions": pending_actions, "session_context": context, "steps": step + 1}
         raise AgentUnavailable(f"Agent exceeded its {self.max_steps}-step limit.")
 
