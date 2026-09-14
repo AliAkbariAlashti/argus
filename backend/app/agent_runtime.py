@@ -188,11 +188,15 @@ class AgentRuntime:
         if not isinstance(arguments, dict):
             return {}
         grounding_text = "\n".join(context).lower()
-        if "camera_id" in arguments and str(arguments["camera_id"]).lower() not in grounding_text:
-            arguments.pop("camera_id")
+        fleet_scopes = {"all", "all cameras", "every camera", "every cameras", "any camera"}
+        if "camera_id" in arguments:
+            camera_ref = str(arguments["camera_id"]).strip().casefold()
+            if camera_ref in fleet_scopes or camera_ref not in grounding_text:
+                arguments.pop("camera_id")
         if "camera_ids" in arguments:
             grounded = [value for value in arguments["camera_ids"]
-                        if isinstance(value, str) and value.lower() in grounding_text]
+                        if isinstance(value, str) and value.strip().casefold() not in fleet_scopes
+                        and value.lower() in grounding_text]
             if grounded:
                 arguments["camera_ids"] = grounded
             else:

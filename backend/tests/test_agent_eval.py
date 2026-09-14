@@ -82,3 +82,22 @@ def test_eval_checks_answer_exclusions():
     result = run_agent_eval.assess("scope", answer, {"answer_excludes": ["East Corridor"]}, 1)
     assert result["passed"] is False
     assert "answer unexpectedly contains East Corridor" in result["failures"]
+
+
+def test_eval_approval_is_idempotent_and_cleans_up_created_rule(monkeypatch):
+    calls = []
+    approved = {"id": "action-1", "status": "approved", "result": {"id": "rule-1"}}
+    def fake_request(base, path, method="GET", payload=None, timeout=180):
+        calls.append((path, method, payload))
+        return approved
+    monkeypatch.setattr(run_agent_eval, "request", fake_request)
+    answer = {"pending_actions": [{"id": "action-1", "action": "create_alert_rule"}]}
+    assessment = {"passed": True, "failures": []}
+    result = run_agent_eval.verify_approval("http://argus", answer,
+        {"approve_action": True, "expected_action": "create_alert_rule"}, assessment)
+    assert result["passed"] is True
+    assert calls == [
+        ("/api/agent/actions/action-1/decision", "POST", {"decision": "approve"}),
+        ("/api/agent/actions/action-1/decision", "POST", {"decision": "approve"}),
+        ("/api/alert-rules/rule-1", "DELETE", None),
+    ]

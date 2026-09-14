@@ -67,6 +67,26 @@ def assess(name, answer, expected, elapsed):
             "tools": tools, "failures": failures, "answer": answer.get("answer")}
 
 
+def verify_approval(base, answer, expected, assessment):
+    if not expected.get("approve_action") or not assessment["passed"]:
+        return assessment
+    actions = answer.get("pending_actions") or []
+    action = next((item for item in actions if item.get("action") == expected.get("expected_action")), None)
+    if action is None:
+        assessment["failures"].append("approval action is unavailable")
+    else:
+        first = request(base, f"/api/agent/actions/{action['id']}/decision", "POST", {"decision": "approve"})
+        second = request(base, f"/api/agent/actions/{action['id']}/decision", "POST", {"decision": "approve"})
+        if first.get("status") != "approved": assessment["failures"].append(f"approval status={first.get('status')!r}")
+        if second.get("status") != "approved" or second.get("result") != first.get("result"):
+            assessment["failures"].append("approval retry was not idempotent")
+        result = first.get("result") or {}
+        if action.get("action") == "create_alert_rule" and result.get("id"):
+            request(base, f"/api/alert-rules/{result['id']}", "DELETE")
+    assessment["passed"] = not assessment["failures"]
+    return assessment
+
+
 def run(base, scenarios):
     results = []
     status = request(base, "/api/agent/status")
@@ -83,7 +103,8 @@ def run(base, scenarios):
                 answer = stream_answer(base, {"question": turn["question"], "session_id": session["id"]}, total_timeout=limit + 30)
                 elapsed = round(time.monotonic() - started, 2)
                 name = scenario["name"] if len(turns) == 1 else f"{scenario['name']} / turn {index}"
-                results.append(assess(name, answer, {**scenario, **turn}, elapsed))
+                expected = {**scenario, **turn}
+                results.append(verify_approval(base, answer, expected, assess(name, answer, expected, elapsed)))
         except (urllib.error.URLError, TimeoutError, socket.timeout, RuntimeError) as exc:
             results.append({"name": scenario["name"], "passed": False, "failures": [str(exc)]})
         finally:

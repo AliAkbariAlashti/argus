@@ -154,6 +154,19 @@ def test_ollama_argument_extraction_drops_ungrounded_camera_ids(monkeypatch):
     assert result == {}
 
 
+def test_ollama_argument_extraction_drops_all_cameras_scope(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    monkeypatch.setattr("app.agent_runtime.httpx.post", lambda *args, **kwargs: SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"message": {"content": json.dumps({"camera_id": "all cameras", "target": "person carrying a backpack"})}},
+    ))
+    result = runtime._ollama_extract_arguments(
+        [{"role": "user", "content": "Create a rule for a person carrying a backpack on all cameras."}],
+        "propose_alert_rule",
+    )
+    assert result == {"target": "person carrying a backpack"}
+
+
 def test_ollama_argument_extraction_requires_camera_ids_from_directory(monkeypatch):
     runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
     monkeypatch.setattr("app.agent_runtime.httpx.post", lambda *args, **kwargs: pytest.fail("unexpected model call"))

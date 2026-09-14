@@ -30,6 +30,7 @@
     "question": "Create a warning rule for a person carrying a backpack on all cameras.",
     "expected_tools": ["propose_alert_rule"],
     "expects_confirmation": true,
+    "approve_action": true,
     "expected_action": "create_alert_rule",
     "required_action_arguments": ["target"],
     "action_argument_contains": {"target": "backpack"},
