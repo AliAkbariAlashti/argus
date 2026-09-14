@@ -111,6 +111,8 @@ def _add_chat_session_column():
             conn.execute(text("INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES ('legacy', 'Previous conversation', NOW(), NOW()) ON CONFLICT (id) DO NOTHING"))
             conn.execute(text("UPDATE chat_messages SET session_id = 'legacy' WHERE session_id IS NULL"))
             conn.execute(text("ALTER TABLE chat_messages ALTER COLUMN session_id SET NOT NULL"))
+        if existing and "agent_data" not in existing:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN agent_data JSON NOT NULL DEFAULT '{}'::json"))
         session_columns = {row[0] for row in conn.execute(text(
             "SELECT column_name FROM information_schema.columns WHERE table_name = 'chat_sessions'"
         ))}
@@ -750,13 +752,14 @@ def _recent_history(db: Session, session_id: str) -> list[dict]:
     return [{"role": r.role, "text": r.text} for r in reversed(rows)]
 
 
-def _save_turn(db: Session, session_id: str, role: str, text: str, cameras_used=None, snapshot=None):
+def _save_turn(db: Session, session_id: str, role: str, text: str, cameras_used=None, snapshot=None, agent_data=None):
     msg = ChatMessage(
         role=role,
         session_id=session_id,
         text=text,
         cameras_used=cameras_used or [],
         snapshot=snapshot,
+        agent_data=agent_data or {},
     )
     db.add(msg)
     db.commit()
@@ -992,7 +995,11 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
             session.context = result.pop("session_context")
             db.commit()
             _save_turn(db, session.id, "user", req.question)
-            _save_turn(db, session.id, "assistant", result["answer"], cameras_used=result["cameras_used"], snapshot=result["snapshot"])
+            trace_summary = [{"tool": item.get("tool"), "status": "failed" if (item.get("result") or {}).get("error") else "completed"}
+                             for item in result.get("tool_trace", [])]
+            action_ids = [item.get("id") for item in result.get("pending_actions", []) if item.get("id")]
+            _save_turn(db, session.id, "assistant", result["answer"], cameras_used=result["cameras_used"], snapshot=result["snapshot"],
+                       agent_data={"scope": "agent", "tool_trace": trace_summary, "pending_action_ids": action_ids})
             return {"question": req.question, "scope": "agent", **result}
         except AgentUnavailable as exc:
             log.warning("Agent planner unavailable; using deterministic fallback: %s", exc)

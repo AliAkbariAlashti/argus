@@ -75,6 +75,9 @@ class ChatMessage(Base):
     # Snapshot of the frame(s) the answer was based on, as a data URI, so the
     # UI can show what the model actually saw. Null for user turns.
     snapshot = Column(Text, nullable=True)
+    # Safe UI metadata for restoring agent work after a refresh. Tool
+    # arguments/results remain in AgentToolRun and are not duplicated here.
+    agent_data = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     def to_dict(self):
@@ -85,6 +88,7 @@ class ChatMessage(Base):
             "text": self.text,
             "cameras_used": self.cameras_used or [],
             "snapshot": self.snapshot,
+            "agent_data": self.agent_data or {},
             "created_at": _utc_iso(self.created_at),
         }
 

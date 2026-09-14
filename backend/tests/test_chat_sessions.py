@@ -15,6 +15,17 @@ def test_save_turn_assigns_session_and_titles_first_question():
     assert session.title == "Check the loading entrance"
 
 
+def test_save_turn_persists_safe_agent_metadata():
+    session = ChatSession(id="session-1", title="Existing")
+    db = Mock()
+    db.get.return_value = session
+    agent_data = {"scope": "agent", "tool_trace": [{"tool": "list_cameras", "status": "completed"}],
+                  "pending_action_ids": ["action-1"]}
+    _save_turn(db, session.id, "assistant", "Done", agent_data=agent_data)
+    message = db.add.call_args.args[0]
+    assert message.agent_data == agent_data
+
+
 def test_recent_history_is_scoped_to_session():
     db = Mock()
     query = db.query.return_value

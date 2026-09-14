@@ -428,18 +428,21 @@ async function loadChatHistory() {
     ]);
     if (!res.ok) return;
     const rows = await res.json(), actions = actionRes.ok ? await actionRes.json() : [];
+    const actionsById = new Map(actions.map(action => [action.id, action]));
     if (chatBusy) return;
     chatLog.length = 0;
     for (const row of rows) {
+      const agentData = row.agent_data || {};
       chatLog.push({
         role: row.role === "assistant" ? "ai" : "user",
         text: row.text,
         camerasUsed: row.cameras_used,
         snapshot: row.snapshot,
+        scope: agentData.scope,
+        toolTrace: agentData.tool_trace,
+        pendingActions: (agentData.pending_action_ids || []).map(id => actionsById.get(id)).filter(Boolean),
       });
     }
-    const lastAssistant = [...chatLog].reverse().find(message => message.role === "ai");
-    if (lastAssistant && actions.length) lastAssistant.pendingActions = actions;
     renderChat();
   } catch (e) {
     // A missing transcript shouldn't block using the app.
@@ -609,7 +612,7 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evi
     const list = document.createElement("ol");
     for (const item of completed) {
       const row = document.createElement("li");
-      const failed = Boolean(item.result?.error);
+      const failed = item.status === "failed" || Boolean(item.result?.error);
       row.innerHTML = `<span>${escapeHtml((item.tool || "unknown").replaceAll("_", " "))}</span><em class="${failed ? "failed" : "ok"}">${failed ? "failed" : "completed"}</em>`;
       list.appendChild(row);
     }
