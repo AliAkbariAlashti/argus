@@ -409,11 +409,34 @@ class AgentRuntime:
             normalized["camera_ids"] = resolved_ids
         return normalized, None
 
+    @staticmethod
+    def _resolve_named_id(value, rows, id_key, label_key):
+        reference = str(value or "").strip().casefold()
+        matches = [str(row[id_key]) for row in rows
+                   if reference in {str(row.get(id_key) or "").strip().casefold(),
+                                    str(row.get(label_key) or "").strip().casefold()}]
+        unique = list(dict.fromkeys(matches))
+        return unique[0] if len(unique) == 1 else None
+
     def _run_tool(self, name, args, db, registry, cpu_monitor, vlm, session_id="unsaved"):
         cameras = db.query(Camera).order_by(Camera.created_at).all()
         args, camera_error = self._resolve_camera_arguments(args, cameras)
         if camera_error:
             return {"error": camera_error}, [], None
+        if args.get("rule_id"):
+            rules = [row.to_dict() for row in db.query(AlertRule).all()]
+            raw = args["rule_id"]
+            resolved = self._resolve_named_id(raw, rules, "id", "target")
+            if resolved is None:
+                return {"error": f"Alert rule '{raw}' was not found or its target is ambiguous."}, [], None
+            args["rule_id"] = resolved
+        if args.get("profile_id"):
+            profiles = vlm.public_profiles()
+            raw = args["profile_id"]
+            resolved = self._resolve_named_id(raw, profiles, "id", "name")
+            if resolved is None:
+                return {"error": f"AI setup '{raw}' was not found or its name is ambiguous."}, [], None
+            args["profile_id"] = resolved
         definition = TOOL_BY_NAME.get(name)
         required = ((definition or {}).get("function", {}).get("parameters", {}).get("required") or [])
         missing = [field for field in required if args.get(field) in (None, "", [])]
@@ -609,6 +632,12 @@ class AgentRuntime:
             context["visual_matches"] = [{key: item.get(key) for key in ("observation_id", "camera_id", "observed_at", "object_type", "similarity")} for item in result.get("matches", [])[:10]]
         elif tool == "suggest_cross_camera_matches":
             context["cross_camera_matches"] = [{"association_id": item.get("id"), "target_observation_id": item.get("target_observation_id"), "camera_id": (item.get("target") or {}).get("camera_id"), "similarity": item.get("similarity")} for item in result.get("matches", [])[:10]]
+        elif tool == "list_alert_rules":
+            context["alert_rules"] = [{key: item.get(key) for key in ("id", "camera_id", "target", "source", "severity", "enabled")}
+                                      for item in result.get("rules", [])[:50]]
+        elif tool == "list_ai_setups":
+            context["ai_setups"] = [{key: item.get(key) for key in ("id", "name", "model", "provider", "active", "ready")}
+                                    for item in result.get("profiles", [])[:20]]
         elif result.get("proposal"):
             context["pending_action"] = {key: result["proposal"].get(key) for key in ("id", "action", "summary", "status")}
         context["last_tool"] = tool

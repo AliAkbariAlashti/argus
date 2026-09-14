@@ -51,6 +51,24 @@
     ]
   },
   {
+    "name": "rule management follow-up",
+    "max_seconds": 90,
+    "turns": [
+      {
+        "question": "List the alert rules configured right now.",
+        "expected_tools": ["list_alert_rules"]
+      },
+      {
+        "question": "Change the person rule severity to warning.",
+        "expected_tools": ["propose_update_alert_rule"],
+        "expects_confirmation": true,
+        "expected_action": "update_alert_rule",
+        "required_action_arguments": ["rule_id", "severity"],
+        "action_argument_contains": {"severity": "warning"}
+      }
+    ]
+  },
+  {
     "name": "recording inventory",
     "question": "List available uploaded camera recordings with their duration and FPS.",
     "expected_tools": ["list_recordings"],

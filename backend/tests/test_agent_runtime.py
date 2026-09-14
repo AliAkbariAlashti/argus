@@ -273,6 +273,25 @@ def test_unknown_and_ambiguous_camera_names_are_rejected():
     assert "Roof" in unknown
 
 
+def test_named_rule_and_profile_references_resolve_to_stable_ids():
+    assert AgentRuntime._resolve_named_id("person", [{"id": "rule-1", "target": "person"}], "id", "target") == "rule-1"
+    assert AgentRuntime._resolve_named_id("profile-1", [{"id": "profile-1", "name": "Moondream"}], "id", "name") == "profile-1"
+    assert AgentRuntime._resolve_named_id("person", [
+        {"id": "rule-1", "target": "person"}, {"id": "rule-2", "target": "person"},
+    ], "id", "target") is None
+
+
+def test_structured_context_remembers_rules_and_ai_setups():
+    rules = AgentRuntime._remember({}, "list_alert_rules", {"rules": [
+        {"id": "rule-1", "camera_id": None, "target": "person", "source": "cpu", "severity": "warning", "enabled": True}
+    ]}, [])
+    setups = AgentRuntime._remember(rules, "list_ai_setups", {"profiles": [
+        {"id": "profile-1", "name": "Moondream", "model": "moondream", "provider": "compatible", "active": True, "ready": True}
+    ]}, [])
+    assert setups["alert_rules"][0]["id"] == "rule-1"
+    assert setups["ai_setups"][0]["id"] == "profile-1"
+
+
 def test_list_recordings_reports_duration_without_exposing_path(tmp_path, monkeypatch):
     recording = tmp_path / "camera.mp4"
     recording.touch()
