@@ -75,3 +75,10 @@ def test_eval_checks_answer_content():
     assert result["passed"] is False
     assert "answer does not contain recordings" in result["failures"]
     assert "answer does not contain FPS" in result["failures"]
+
+
+def test_eval_checks_answer_exclusions():
+    answer = {"scope": "agent", "answer": "Server Room and East Corridor are online.", "tool_trace": []}
+    result = run_agent_eval.assess("scope", answer, {"answer_excludes": ["East Corridor"]}, 1)
+    assert result["passed"] is False
+    assert "answer unexpectedly contains East Corridor" in result["failures"]

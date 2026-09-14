@@ -129,17 +129,51 @@ class AgentRuntime:
     def _is_ollama(self):
         return "ollama" in self.base_url.lower() or any(port in self.base_url for port in (":11434", ":11435"))
 
+    @staticmethod
+    def _camera_bindings(messages, schema):
+        properties = schema.get("properties") or {}
+        if not ({"camera_id", "camera_ids"} & set(properties)):
+            return {}
+        question = next((str(message.get("content") or "") for message in reversed(messages)
+                         if message.get("role") == "user"), "")
+        directory = []
+        for message in messages:
+            content = str(message.get("content") or "")
+            if message.get("role") == "system" and content.startswith("Camera directory"):
+                try:
+                    directory = json.loads(content.split("\n", 1)[1])
+                except (IndexError, json.JSONDecodeError):
+                    directory = []
+        lowered = question.casefold()
+        matched = []
+        for camera in directory:
+            camera_id, camera_name = str(camera.get("id") or ""), str(camera.get("name") or "")
+            if (camera_id and camera_id.casefold() in lowered) or (camera_name and camera_name.casefold() in lowered):
+                if camera_id not in matched:
+                    matched.append(camera_id)
+        if "camera_ids" in properties and matched:
+            return {"camera_ids": matched}
+        if "camera_id" in properties and len(matched) == 1:
+            return {"camera_id": matched[0]}
+        return {}
+
     def _ollama_extract_arguments(self, messages, tool):
         function = TOOL_BY_NAME[tool]["function"]
         schema = function.get("parameters") or {"type": "object", "properties": {}}
         if not schema.get("properties"):
             return {}
-        context = [message.get("content", "") for message in messages[-6:]
-                   if message.get("role") == "user" or (message.get("role") == "system" and message.get("content", "").startswith("Structured context"))]
+        camera_bindings = self._camera_bindings(messages, schema)
+        non_camera_fields = set(schema.get("properties") or {}) - {"camera_id", "camera_ids"}
+        if not non_camera_fields:
+            return camera_bindings
+        context = [message.get("content", "") for message in messages[-8:]
+                   if message.get("role") == "user" or (message.get("role") == "system" and
+                      message.get("content", "").startswith(("Structured context", "Camera directory")))]
         prompt = (f"Extract arguments for {tool} from the request. {function.get('description', '')} "
                   "Return only fields defined by the JSON schema. Use only information stated by the user or retained context. "
-                  "Omit optional values that are absent. camera_id and camera_ids accept exact IDs from Structured context only; "
-                  "never invent IDs or put camera names, 'all cameras', or other scope phrases in them. If all cameras are requested, "
+                  "Omit optional values that are absent. camera_id and camera_ids accept an exact camera ID from Structured context "
+                  "or an exact camera name stated by the user; never invent references or put 'all cameras' or other scope phrases "
+                  "in them. If all cameras are requested, "
                   "omit the optional camera field. For propose_alert_rule, target is only the object or visual condition to detect; "
                   "copy that condition from the request and never use camera scope as target. Example: 'a person carrying a backpack "
                   "on all cameras' has target 'person carrying a backpack' and no camera_id.")
@@ -163,6 +197,7 @@ class AgentRuntime:
                 arguments["camera_ids"] = grounded
             else:
                 arguments.pop("camera_ids")
+        arguments.update(camera_bindings)
         return arguments
 
     @staticmethod
@@ -320,17 +355,48 @@ class AgentRuntime:
             return "Recordings:\n" + "\n".join(f"- {row['camera_name']} — {row.get('duration_seconds')} seconds at {row.get('fps')} FPS" if row.get("available") else f"- {row['camera_name']} — unavailable" for row in rows)
         return None
 
+    @staticmethod
+    def _resolve_camera_arguments(args, cameras):
+        """Resolve model-provided camera names to stable IDs before tool execution."""
+        normalized = dict(args or {})
+        references = {}
+        for camera in cameras:
+            references.setdefault(str(camera.id).strip().casefold(), []).append(camera.id)
+            references.setdefault(str(camera.name).strip().casefold(), []).append(camera.id)
+
+        def resolve(value):
+            matches = references.get(str(value).strip().casefold(), [])
+            return matches[0] if len(set(matches)) == 1 else None
+
+        if normalized.get("camera_id"):
+            raw = normalized["camera_id"]
+            resolved = resolve(raw)
+            if resolved is None:
+                return normalized, f"Camera '{raw}' was not found or its name is ambiguous."
+            normalized["camera_id"] = resolved
+        if normalized.get("camera_ids"):
+            resolved_ids = []
+            for raw in normalized["camera_ids"]:
+                resolved = resolve(raw)
+                if resolved is None:
+                    return normalized, f"Camera '{raw}' was not found or its name is ambiguous."
+                if resolved not in resolved_ids:
+                    resolved_ids.append(resolved)
+            normalized["camera_ids"] = resolved_ids
+        return normalized, None
+
     def _run_tool(self, name, args, db, registry, cpu_monitor, vlm, session_id="unsaved"):
+        cameras = db.query(Camera).order_by(Camera.created_at).all()
+        args, camera_error = self._resolve_camera_arguments(args, cameras)
+        if camera_error:
+            return {"error": camera_error}, [], None
         definition = TOOL_BY_NAME.get(name)
         required = ((definition or {}).get("function", {}).get("parameters", {}).get("required") or [])
         missing = [field for field in required if args.get(field) in (None, "", [])]
         if missing:
             return {"error": f"Missing required tool arguments: {', '.join(missing)}."}, [], None
-        cameras = db.query(Camera).order_by(Camera.created_at).all()
         by_id = {camera.id: camera for camera in cameras}
         requested = args.get("camera_ids") or []
-        if requested and any(camera_id not in by_id for camera_id in requested):
-            return {"error": "One or more camera IDs do not exist."}, [], None
         selected = [by_id[camera_id] for camera_id in requested] if requested else cameras
         if name == "list_cameras":
             data = [{"id": camera.id, "name": camera.name, "location": camera.location,
@@ -527,6 +593,10 @@ class AgentRuntime:
     def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, on_token=None, session_id="unsaved", session_context=None):
         prompt = OLLAMA_SYSTEM_PROMPT if self._is_ollama() else SYSTEM_PROMPT
         messages = [{"role": "system", "content": prompt.format(now=datetime.now(timezone.utc).isoformat(), catalog=TOOL_CATALOG)}]
+        if hasattr(db, "query"):
+            cameras = db.query(Camera).order_by(Camera.created_at).all()
+            directory = [{"id": camera.id, "name": camera.name, "location": camera.location} for camera in cameras]
+            messages.append({"role": "system", "content": "Camera directory. Resolve camera names to these exact stable IDs:\n" + json.dumps(directory, default=str)[:6000]})
         context = dict(session_context or {})
         if context:
             messages.append({"role": "system", "content": "Structured context retained from this conversation. Resolve follow-ups against these stable IDs:\n" + json.dumps(context, default=str)[:12000]})

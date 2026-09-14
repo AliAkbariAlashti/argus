@@ -127,7 +127,6 @@ def test_ollama_constrained_plan_becomes_validated_dispatch(monkeypatch):
     runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
     packets = iter([
         {"message": {"role": "assistant", "content": json.dumps({"tool": "get_camera_health", "answer": ""})}},
-        {"message": {"role": "assistant", "content": '{"camera_ids":[]}'}}
     ])
     seen = []
     def post(url, **kwargs):
@@ -139,7 +138,7 @@ def test_ollama_constrained_plan_becomes_validated_dispatch(monkeypatch):
     assert arguments == {"name": "get_camera_health", "arguments": {}}
     assert "tools" not in seen[0]
     assert seen[0]["format"]["properties"]["tool"]["enum"]
-    assert seen[1]["format"]["properties"]["camera_ids"]
+    assert len(seen) == 1
 
 
 def test_ollama_argument_extraction_drops_ungrounded_camera_ids(monkeypatch):
@@ -155,16 +154,35 @@ def test_ollama_argument_extraction_drops_ungrounded_camera_ids(monkeypatch):
     assert result == {}
 
 
-def test_ollama_argument_extraction_keeps_grounded_camera_ids(monkeypatch):
+def test_ollama_argument_extraction_requires_camera_ids_from_directory(monkeypatch):
     runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
-    monkeypatch.setattr("app.agent_runtime.httpx.post", lambda *args, **kwargs: SimpleNamespace(
-        raise_for_status=lambda: None,
-        json=lambda: {"message": {"content": json.dumps({"camera_ids": ["camera-123", "invented"]})}},
-    ))
+    monkeypatch.setattr("app.agent_runtime.httpx.post", lambda *args, **kwargs: pytest.fail("unexpected model call"))
     result = runtime._ollama_extract_arguments(
-        [{"role": "user", "content": "Check camera-123."}], "get_camera_health"
+        [
+            {"role": "system", "content": 'Camera directory:\n[{"id":"camera-123","name":"Lobby"}]'},
+            {"role": "user", "content": "Check camera-123."},
+        ],
+        "get_camera_health",
     )
     assert result == {"camera_ids": ["camera-123"]}
+
+
+def test_camera_only_arguments_bind_without_a_second_model_call(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    monkeypatch.setattr("app.agent_runtime.httpx.post", lambda *args, **kwargs: pytest.fail("unexpected model call"))
+    messages = [
+        {"role": "system", "content": 'Camera directory. Resolve camera names to these exact stable IDs:\n[{"id":"cam-1","name":"Server Room"}]'},
+        {"role": "user", "content": "Is the Server Room camera online?"},
+    ]
+    assert runtime._ollama_extract_arguments(messages, "get_camera_health") == {"camera_ids": ["cam-1"]}
+
+
+def test_camera_only_arguments_default_to_all_without_a_second_model_call(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    monkeypatch.setattr("app.agent_runtime.httpx.post", lambda *args, **kwargs: pytest.fail("unexpected model call"))
+    assert runtime._ollama_extract_arguments(
+        [{"role": "user", "content": "Which cameras are online?"}], "get_camera_health"
+    ) == {}
 
 
 def test_camera_health_is_compact_for_model_context():
@@ -192,6 +210,23 @@ def test_required_tool_arguments_are_rejected_before_execution():
     result, used, evidence = runtime._run_tool("propose_alert_rule", {}, FakeCameraDb([]), object(), object(), object())
     assert result == {"error": "Missing required tool arguments: target."}
     assert used == [] and evidence is None
+
+
+def test_camera_names_resolve_to_stable_ids_before_tool_execution():
+    cameras = [SimpleNamespace(id="cam-1", name="Server Room")]
+    args, error = AgentRuntime._resolve_camera_arguments(
+        {"camera_ids": ["Server Room"], "camera_id": "cam-1"}, cameras
+    )
+    assert error is None
+    assert args == {"camera_ids": ["cam-1"], "camera_id": "cam-1"}
+
+
+def test_unknown_and_ambiguous_camera_names_are_rejected():
+    cameras = [SimpleNamespace(id="cam-1", name="Lobby"), SimpleNamespace(id="cam-2", name="Lobby")]
+    _, ambiguous = AgentRuntime._resolve_camera_arguments({"camera_id": "Lobby"}, cameras)
+    _, unknown = AgentRuntime._resolve_camera_arguments({"camera_ids": ["Roof"]}, cameras)
+    assert "ambiguous" in ambiguous
+    assert "Roof" in unknown
 
 
 def test_list_recordings_reports_duration_without_exposing_path(tmp_path, monkeypatch):

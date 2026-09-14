@@ -61,6 +61,8 @@ def assess(name, answer, expected, elapsed):
     if not answer_text: failures.append("empty answer")
     for value in expected.get("answer_contains", []):
         if value.lower() not in answer_text.lower(): failures.append(f"answer does not contain {value}")
+    for value in expected.get("answer_excludes", []):
+        if value.lower() in answer_text.lower(): failures.append(f"answer unexpectedly contains {value}")
     return {"name": name, "passed": not failures, "elapsed_seconds": elapsed,
             "tools": tools, "failures": failures, "answer": answer.get("answer")}
 
