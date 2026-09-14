@@ -54,6 +54,7 @@ class VisionRuntime:
             if active in self._profiles:
                 self._active_profile_id = active
                 self._settings = self._profile_settings(self._profiles[active])
+                self._verified = self._profiles[active].get("last_test_status") == "passed"
             return
         if isinstance(data, dict):
             self._settings.update(data)
@@ -174,7 +175,7 @@ class VisionRuntime:
             if activate or self._active_profile_id is None:
                 self._active_profile_id = profile["id"]
                 self._settings = self._profile_settings(profile)
-                self._verified = False
+                self._verified = profile.get("last_test_status") == "passed"
                 self._error = None
             self._persist()
         return self.public_settings()
@@ -186,7 +187,7 @@ class VisionRuntime:
                 raise ValueError("AI setup not found.")
             self._active_profile_id = profile_id
             self._settings = self._profile_settings(profile)
-            self._verified = False
+            self._verified = profile.get("last_test_status") == "passed"
             self._error = None
             self._persist()
             return self.public_settings()
@@ -199,7 +200,7 @@ class VisionRuntime:
             if profile_id == self._active_profile_id:
                 self._active_profile_id = next(iter(self._profiles), None)
                 self._settings = self._profile_settings(self._profiles[self._active_profile_id]) if self._active_profile_id else self._default_settings()
-                self._verified = False
+                self._verified = bool(self._active_profile_id and self._profiles[self._active_profile_id].get("last_test_status") == "passed")
                 self._error = None
             self._persist()
             return self.public_settings()

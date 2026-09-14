@@ -68,6 +68,8 @@ def test_vision_probe_and_stream_preserve_images_and_tokens(runtime, monkeypatch
     assert tokens == ["A person ", "is visible."]
     assert "chronological" in requests[-1]["messages"][-1]["content"][-1]["text"]
     runtime.configure(settings())
+    assert runtime.ready
+    runtime.configure(settings(model="different-vision"))
     assert not runtime.ready
 
 
@@ -149,3 +151,22 @@ def test_saved_profiles_can_be_switched_without_exposing_keys(runtime):
     reloaded = VisionRuntime(runtime.path)
     assert reloaded.public_settings()["model"] == "vision-b"
     assert reloaded.public_settings()["profile_id"] != first_id
+
+
+def test_successfully_tested_remote_profile_remains_ready_after_restart(runtime):
+    runtime.configure(settings())
+    runtime._verified = True
+    runtime._record_test("passed", 1.2, "Vision test passed.")
+    reloaded = VisionRuntime(runtime.path)
+    assert reloaded.ready is True
+
+
+def test_activating_a_previously_tested_profile_restores_readiness(runtime):
+    runtime.configure({**settings(model="vision-a"), "name": "Tested"})
+    tested_id = runtime.public_settings()["profile_id"]
+    runtime._verified = True
+    runtime._record_test("passed", 1.0, "Vision test passed.")
+    runtime.configure({**settings(model="vision-b"), "name": "Other", "create_new": True})
+    assert runtime.ready is False
+    runtime.activate(tested_id)
+    assert runtime.ready is True

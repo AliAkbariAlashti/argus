@@ -22,7 +22,7 @@ from .visual_search import find_by_text, find_similar
 log = logging.getLogger("qwenvl.agent_runtime")
 
 SYSTEM_PROMPT = """You are Argus, a CCTV operator. Speak naturally. Use tools for camera, scene, health, event, rule, and configuration facts. First call load_tools with up to four names from the catalog; load more later if needed. Never invent evidence or IDs. Include camera names and times when known. Changes create confirmation proposals. UTC: {now}.\nTools: {catalog}"""
-OLLAMA_SYSTEM_PROMPT = """You are Argus, a CCTV operator. Speak naturally. For camera, scene, health, event, rule, and configuration facts, select an exact catalog tool. Never guess or ask for IDs when camera_ids is optional. Requests to create, change, activate, or delete must use a propose_* tool; list_* tools only read. 'List available recordings with duration or FPS' always means list_recordings. inspect_recording requires one explicit camera plus numeric offsets; inspect_live_cameras is only for the current scene. If a tool result follows, answer directly from it with camera names and times when known. Changes create confirmation proposals. UTC: {now}.\nTools: {catalog}"""
+OLLAMA_SYSTEM_PROMPT = """You are Argus, a CCTV operator. Speak naturally. For camera, scene, health, event, rule, and configuration facts, select an exact catalog tool. Never guess or ask for IDs when camera_ids is optional. Requests to create, change, activate, or delete must use a propose_* tool; list_* tools only read. 'List available recordings with duration or FPS' always means list_recordings. Current, live, now, or latest-frame inspection always means inspect_live_cameras, never inspect_recording. inspect_recording is only for an uploaded archive and requires one explicit camera plus numeric offsets. If a tool result follows, answer directly from it with camera names and times when known. Changes create confirmation proposals. UTC: {now}.\nTools: {catalog}"""
 
 
 TOOLS = [
@@ -48,7 +48,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "propose_activate_ai_setup", "description": "Prepare activating a saved vision-model setup for confirmation.", "parameters": {"type": "object", "required": ["profile_id"], "properties": {"profile_id": {"type": "string"}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "inspect_live_cameras", "description": "Ask the vision model to inspect current frames. Use only when pixels must be examined, after identifying relevant cameras.", "parameters": {"type": "object", "required": ["camera_ids", "question"], "properties": {"camera_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "list_recordings", "description": "List all uploaded camera recordings with duration, frame rate, and availability.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "inspect_recording", "description": "Inspect selected timestamps from one uploaded recording with the vision model.", "parameters": {"type": "object", "required": ["camera_id", "offset_seconds", "question"], "properties": {"camera_id": {"type": "string"}, "offset_seconds": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 1, "maxItems": 6}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "inspect_recording", "description": "Inspect explicit timestamps from one uploaded archive recording; never use for current or live frames.", "parameters": {"type": "object", "required": ["camera_id", "offset_seconds", "question"], "properties": {"camera_id": {"type": "string"}, "offset_seconds": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 1, "maxItems": 6}, "question": {"type": "string", "maxLength": 1000}}, "additionalProperties": False}}},
 ]
 
 TOOL_BY_NAME = {item["function"]["name"]: item for item in TOOLS}
@@ -662,7 +662,6 @@ class AgentRuntime:
                 if used_generic_dispatch:
                     operational_answer = self._operational_answer(name, result)
             if used_generic_dispatch:
-                active_tools = []
                 if operational_answer:
                     if on_token: on_token(operational_answer)
                     return {"answer": operational_answer, "cameras_used": list(dict.fromkeys(cameras_used)), "snapshot": snapshot,

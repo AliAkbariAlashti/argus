@@ -123,6 +123,27 @@ def test_ollama_uses_single_step_generic_dispatch(monkeypatch):
     assert result["answer"] == "0 of 0 cameras are online."
 
 
+def test_ollama_can_chain_tools_before_answering(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen", max_steps=4)
+    replies = iter([
+        {"role": "assistant", "tool_calls": [{"id": "a", "function": {"name": "call_argus_tool", "arguments": json.dumps({"name": "search_observations", "arguments": {"object_type": "person"}})}}]},
+        {"role": "assistant", "tool_calls": [{"id": "b", "function": {"name": "call_argus_tool", "arguments": json.dumps({"name": "inspect_live_cameras", "arguments": {"camera_ids": ["cam-1"], "question": "Is the person still there?"}})}}]},
+    ])
+    monkeypatch.setattr(runtime, "_complete", lambda messages, tools=None, on_token=None: next(replies))
+    calls = []
+    def run_tool(name, args, *rest):
+        calls.append((name, args))
+        if name == "search_observations":
+            return {"count": 1, "observations": [{"camera_id": "cam-1"}]}, ["cam-1"], "stored"
+        return {"answer": "The person is still visible."}, ["cam-1"], "live"
+    monkeypatch.setattr(runtime, "_run_tool", run_tool)
+    result = runtime.answer("Find the recent person and check now.", [], fake_db(), object(), object(), object())
+    assert [name for name, _ in calls] == ["search_observations", "inspect_live_cameras"]
+    assert result["answer"] == "The person is still visible."
+    assert result["snapshot"] == "stored"
+    assert result["steps"] == 2
+
+
 def test_ollama_constrained_plan_becomes_validated_dispatch(monkeypatch):
     runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
     packets = iter([
