@@ -2097,6 +2097,13 @@ button { color:inherit; }
 .agent-trace li em { margin-left:8px; font:9px var(--font-mono); font-style:normal; text-transform:uppercase; }
 .agent-trace li em.ok { color:#75c89d; }
 .agent-trace li em.failed { color:#e18080; }
+.jev-badge { display:inline-flex; align-items:center; margin-top:10px; border:1px solid rgba(112,190,170,.32); border-radius:5px; padding:5px 8px; color:#a6dccb; background:rgba(38,105,88,.13); font:9px var(--font-mono); letter-spacing:.02em; }
+.jev-badge.attention { border-color:rgba(222,166,103,.42); color:#edc18f; background:rgba(135,84,31,.13); }
+.agent-jev-details { margin-top:7px; max-width:520px; color:var(--text-dim); font-size:10px; }
+.agent-jev-details summary { cursor:pointer; font-family:var(--font-mono); }
+.agent-jev-values { display:grid; gap:5px; margin-top:7px; }
+.agent-jev-values div { display:flex; justify-content:space-between; gap:16px; border-bottom:1px solid var(--border); padding:4px 0; }
+.agent-jev-values strong { color:var(--text); text-align:right; font-weight:500; }
 .agent-planner-form { display:grid; grid-template-columns:2fr 1.4fr 1fr 130px; align-items:end; gap:12px; margin-top:18px; }
 .agent-planner-form .check-field,.agent-planner-form .modal-actions,.agent-planner-form .runtime-message { grid-column:1/-1; }
 @media(max-width:900px) { .agent-planner-form { grid-template-columns:1fr 1fr; } }

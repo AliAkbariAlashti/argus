@@ -119,6 +119,53 @@ Settings default to `backend/data/runtime.json`. Override with `ARGUS_RUNTIME_FI
 Set `ARGUS_NODE_ID` to a stable deployment or edge-worker name when multiple
 Argus processes write observations to the same database.
 
+### Jev agent routing and evidence checks
+
+When `TYPESAFE_API_KEY` is configured, Jev selects the first action for clear,
+single-step Agent requests before Argus runs it. Jev chooses only from the
+registered Argus tools. For the selected tool, Jev also chooses explicitly
+requested enum and boolean arguments from that tool's finite schema. Unspecified
+values stay unset; uncertain routes or argument choices use the Qwen planner.
+Qwen fills open-ended arguments and composes answers when needed; Argus formats
+simple structured results, resolves IDs, validates, and executes every tool.
+Changes still produce confirmation proposals.
+At the default confidence threshold (`0.65`), dependent multi-step requests go to
+the Qwen planner. Jev is text-only; the configured vision model continues to
+inspect frames when Argus runs a live-camera tool.
+
+Set `ARGUS_JEV_ROUTING_MODE=shadow` to compare Jev's choice with the Qwen
+planner without affecting execution, or `off` to disable Jev routing. The chat
+shows Jev's route and evidence-check result on each Agent answer. Route records
+include the selected action, confidence, decision, and executed tool at
+`GET /api/agent/jev-runs?task=routing`; status and queue depth are at
+`GET /api/agent/jev/status`.
+
+Jev checks agent answers against compact, filtered tool results by default when
+a TypeSafe key is configured. Set `ARGUS_JEV_VERIFY_ANSWERS=0` to disable this.
+A support probability below `ARGUS_JEV_VERIFY_THRESHOLD` (default `0.8`) adds a
+review note to the answer. Jev checks never approve an action or change Argus
+data. Checks add a TypeSafe request before an answer is returned. Both routing
+and answer checking are enabled by default when a TypeSafe key is configured.
+
+These features send the user request and relevant tool descriptions to TypeSafe;
+answer checks also send the answer and filtered structured tool results. Argus
+does not send camera frames, snapshots, or stored question/answer text in its Jev
+evaluation rows. Keep `TYPESAFE_API_KEY` in the server environment. The Compose
+profile passes it from the shell environment into the Argus service.
+
+```bash
+export TYPESAFE_API_KEY='your-key'
+export ARGUS_JEV_ROUTING_MODE=active
+export ARGUS_JEV_ROUTE_THRESHOLD=0.65
+export ARGUS_JEV_VERIFY_ANSWERS=1
+docker compose -f compose.mvp.yml up --build -d
+```
+
+Jev outcomes are stored in the Argus database without the request, answer, or
+evidence contents. Routing records include the suggested tool, confidence,
+actual first tool, agreement, model, and latency. The review endpoint accepts
+`session_id`, `task=routing|answer_support`, and `limit` filters.
+
 ### Structured observation index
 
 CPU object detections, tracked-object samples, line crossings, and dwell events

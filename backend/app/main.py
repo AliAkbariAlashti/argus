@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from .camera import registry
 from .agent import answer_health_question
-from .agent_runtime import AgentUnavailable, agent_runtime
+from .agent_runtime import AgentUnavailable, TOOLS, agent_runtime
 from .agent_actions import decide_action
 from .cpu import CpuSettings, cpu_monitor, events_csv, health as cpu_health
 from .config import (
@@ -44,12 +44,13 @@ from .grounding import (
     route_question,
 )
 from .imaging import frame_to_pil, image_to_data_uri
-from .models import AgentAction, AgentToolRun, AlertRule, Camera, CameraLink, ChatMessage, ChatSession, EntityAssociation, Event, Observation, CpuConfig
+from .models import AgentAction, AgentToolRun, AlertRule, Camera, CameraLink, ChatMessage, ChatSession, EntityAssociation, Event, JevRun, Observation, CpuConfig
 from .entity_matching import decide_association, suggest_matches
 from .observation_query import answer_observation_question
 from .visual_search import find_by_text, find_similar, initialize_vector_backend, provider_status, vector_backend_status
 from .verification import select_candidates, verification_prompt, wants_verification
 from .monitor import monitor
+from .jev import jev
 from .runtime import vlm
 from . import yolo
 from . import history
@@ -120,9 +121,23 @@ def _add_chat_session_column():
             conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN context JSON NOT NULL DEFAULT '{}'::json"))
 
 
+def _add_jev_route_columns():
+    with engine.begin() as conn:
+        existing = {row[0] for row in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'jev_runs'"
+        ))}
+        if existing and "routing_mode" not in existing:
+            conn.execute(text("ALTER TABLE jev_runs ADD COLUMN routing_mode VARCHAR(16)"))
+        if existing and "route_decision" not in existing:
+            conn.execute(text("ALTER TABLE jev_runs ADD COLUMN route_decision VARCHAR(32)"))
+        if existing and "executed_tool" not in existing:
+            conn.execute(text("ALTER TABLE jev_runs ADD COLUMN executed_tool VARCHAR(80)"))
+
+
 def _seed_and_start_cameras():
     Base.metadata.create_all(bind=engine)
     _add_chat_session_column()
+    _add_jev_route_columns()
     initialize_vector_backend(engine)
     _add_alert_rule_columns()
     _add_event_confidence_column()
@@ -142,6 +157,7 @@ def _seed_and_start_cameras():
 @app.on_event("startup")
 def on_startup():
     _seed_and_start_cameras()
+    jev.start()
     threading.Thread(target=vlm.load, daemon=True).start()
     monitor.start()
     cpu_monitor.start()
@@ -149,6 +165,7 @@ def on_startup():
 
 @app.on_event("shutdown")
 def on_shutdown():
+    jev.stop()
     cpu_monitor.stop()
     registry.stop_all()
     monitor.stop()
@@ -988,19 +1005,82 @@ def _answer_chat(req: ChatRequest, db: Session, on_token=None, on_status=None):
             forced_camera_id = focused_camera.id
     if agent_runtime.configured and req.scope != "cpu":
         try:
+            capture_tokens = bool(on_token and jev.answer_check_enabled)
+            jev_route = None
+            if jev.active_routing_enabled:
+                if on_status:
+                    on_status("Jev is choosing the first tool…")
+                jev_route = jev.route_request(
+                    question=req.question,
+                    session_id=session.id,
+                    tools=TOOLS,
+                )
             result = agent_runtime.answer(
                 req.question, _recent_history(db, session.id), db, registry, cpu_monitor, vlm,
-                on_status=on_status, on_token=on_token, session_id=session.id, session_context=session.context or {},
+                on_status=on_status,
+                on_token=None if capture_tokens else on_token,
+                session_id=session.id, session_context=session.context or {},
+                jev_route=jev_route,
             )
             session.context = result.pop("session_context")
             db.commit()
+
+            first_tool = next(
+                (item.get("tool") for item in result.get("tool_trace", [])
+                 if item.get("tool") not in (None, "", "load_tools")),
+                "direct_answer",
+            )
+            if jev.shadow_routing_enabled:
+                jev.enqueue_route(
+                    question=req.question,
+                    session_id=session.id,
+                    baseline_tool=first_tool,
+                    tools=TOOLS,
+                )
+
+            route_details = result.get("jev_route")
+            if jev_route:
+                route_details = route_details or jev_route
+                if not route_details.get("executed_tool"):
+                    route_details["executed_tool"] = first_tool
+                jev.complete_route(
+                    jev_route.get("run_id"),
+                    executed_tool=route_details.get("executed_tool"),
+                    decision=route_details.get("decision"),
+                )
+            elif jev.shadow_routing_enabled:
+                route_details = {"mode": "shadow", "decision": "observing"}
+
+            evidence_check = None
+            if jev.answer_check_enabled:
+                evidence_check = jev.check_answer(
+                    question=req.question,
+                    answer=result["answer"],
+                    tool_trace=result.get("tool_trace", []),
+                    session_id=session.id,
+                )
+                result["evidence_check"] = evidence_check
+                if evidence_check["status"] == "review":
+                    result["answer"] += (
+                        "\n\nJev could not confirm every factual detail from the returned evidence. "
+                        "Review the cited records before relying on this answer."
+                    )
+                elif evidence_check["status"] == "unavailable":
+                    result["answer"] += (
+                        "\n\nJev's evidence check was unavailable; this answer has not been checked."
+                    )
+                if capture_tokens:
+                    on_token(result["answer"])
+            result["jev"] = {"routing": route_details, "answer_check": evidence_check}
+
             _save_turn(db, session.id, "user", req.question)
             trace_summary = [{"tool": item.get("tool"), "status": "failed" if (item.get("result") or {}).get("error") else "completed"}
                              for item in result.get("tool_trace", [])]
             action_ids = [item.get("id") for item in result.get("pending_actions", []) if item.get("id")]
             _save_turn(db, session.id, "assistant", result["answer"], cameras_used=result["cameras_used"], snapshot=result["snapshot"],
                        agent_data={"scope": "agent", "tool_trace": trace_summary, "pending_action_ids": action_ids,
-                                   "evidence": result.get("evidence", [])})
+                                   "evidence": result.get("evidence", []), "jev_evidence_check": evidence_check,
+                                   "jev": result["jev"]})
             return {"question": req.question, "scope": "agent", **result}
         except AgentUnavailable as exc:
             log.warning("Agent planner unavailable; using deterministic fallback: %s", exc)
@@ -1178,6 +1258,25 @@ def _conversation_lock(session_id):
 @app.get("/api/agent/status")
 def agent_status():
     return agent_runtime.public_status()
+
+
+@app.get("/api/agent/jev/status")
+def jev_status():
+    return jev.status()
+
+
+@app.get("/api/agent/jev-runs")
+def jev_runs(session_id: Optional[str] = None, task: Optional[str] = None, limit: int = 100,
+              db: Session = Depends(get_db)):
+    query = db.query(JevRun)
+    if session_id:
+        query = query.filter(JevRun.session_id == session_id)
+    if task:
+        if task not in ("routing", "answer_support"):
+            raise HTTPException(400, "Invalid Jev task.")
+        query = query.filter(JevRun.task == task)
+    rows = query.order_by(JevRun.created_at.desc()).limit(max(1, min(limit, 500))).all()
+    return [row.to_dict() for row in rows]
 
 
 @app.put("/api/agent/settings")

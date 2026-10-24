@@ -123,6 +123,112 @@ def test_ollama_uses_single_step_generic_dispatch(monkeypatch):
     assert result["answer"] == "0 of 0 cameras are online."
 
 
+def test_jev_selected_tool_runs_without_planner_choosing_it(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    monkeypatch.setattr(runtime, "_complete", lambda *args, **kwargs: pytest.fail("Jev already selected the tool"))
+    calls = []
+    monkeypatch.setattr(runtime, "_run_tool", lambda name, args, *rest: (
+        calls.append((name, args)) or {"cameras": [{"name": "Lobby", "location": "Entrance", "online": True}]},
+        [],
+        None,
+    ))
+
+    result = runtime.answer(
+        "List cameras",
+        [],
+        fake_db(),
+        object(),
+        object(),
+        object(),
+        jev_route={"mode": "active", "decision": "routed", "suggested_tool": "list_cameras", "confidence": 0.98, "threshold": 0.65},
+    )
+
+    assert calls == [("list_cameras", {})]
+    assert "Lobby" in result["answer"]
+    assert result["jev_route"]["decision"] == "routed"
+    assert result["jev_route"]["executed_tool"] == "list_cameras"
+
+
+def test_jev_direct_answer_disables_tool_planning(monkeypatch):
+    runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen")
+    calls = []
+    def complete(messages, tools=None, on_token=None, **kwargs):
+        calls.append(tools)
+        return {"role": "assistant", "content": "Hello."}
+    monkeypatch.setattr(runtime, "_complete", complete)
+
+    result = runtime.answer(
+        "Say hello",
+        [],
+        fake_db(),
+        object(),
+        object(),
+        object(),
+        jev_route={"mode": "active", "decision": "direct_answer", "suggested_tool": "direct_answer", "confidence": 0.99, "threshold": 0.65},
+    )
+
+    assert calls == [[]]
+    assert result["answer"] == "Hello."
+    assert result["jev_route"]["executed_tool"] == "direct_answer"
+
+
+def test_instruction_model_argument_call_is_forced_to_jev_tool(monkeypatch):
+    runtime = AgentRuntime(base_url="http://model", model="instruct")
+    seen = []
+    def post(_url, **kwargs):
+        seen.append(kwargs["json"])
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"choices": [{"message": {"tool_calls": [{
+                "function": {"name": "propose_alert_rule", "arguments": json.dumps({"target": "person", "source": "vlm"})}
+            }]}}]},
+        )
+    monkeypatch.setattr("app.agent_runtime.httpx.post", post)
+
+    arguments = runtime._extract_routed_arguments(
+        [{"role": "user", "content": "Add a person alert"}],
+        "propose_alert_rule",
+        jev_arguments={"source": "vlm"},
+    )
+
+    assert arguments == {"target": "person", "source": "vlm"}
+    assert seen[0]["tool_choice"] == {"type": "function", "function": {"name": "propose_alert_rule"}}
+
+
+def test_jev_closed_arguments_override_instruction_model_guesses(monkeypatch):
+    runtime = AgentRuntime(base_url="http://model", model="instruct")
+    monkeypatch.setattr(runtime, "_complete", lambda *args, **kwargs: {
+        "tool_calls": [{"function": {"name": "propose_alert_rule", "arguments": json.dumps({
+            "target": "person carrying a bag", "source": "cpu", "severity": "critical",
+        })}}],
+    })
+
+    arguments = runtime._extract_routed_arguments(
+        [{"role": "user", "content": "Create a VLM warning for a person carrying a bag"}],
+        "propose_alert_rule",
+        jev_arguments={"source": "vlm", "severity": "warning"},
+    )
+
+    assert arguments == {"target": "person carrying a bag", "source": "vlm", "severity": "warning"}
+
+
+def test_jev_closed_arguments_preserve_open_nested_settings(monkeypatch):
+    runtime = AgentRuntime(base_url="http://model", model="instruct")
+    monkeypatch.setattr(runtime, "_complete", lambda *args, **kwargs: {
+        "tool_calls": [{"function": {"name": "propose_cpu_configuration", "arguments": json.dumps({
+            "camera_id": "Lobby", "settings": {"enabled": False, "dwell_seconds": 45},
+        })}}],
+    })
+
+    arguments = runtime._extract_routed_arguments(
+        [{"role": "user", "content": "Disable CPU analysis on Lobby and set dwell to 45 seconds"}],
+        "propose_cpu_configuration",
+        jev_arguments={"settings": {"enabled": False}},
+    )
+
+    assert arguments == {"camera_id": "Lobby", "settings": {"enabled": False, "dwell_seconds": 45}}
+
+
 def test_ollama_can_chain_tools_before_answering(monkeypatch):
     runtime = AgentRuntime(base_url="http://localhost:11434/v1", model="qwen", max_steps=4)
     replies = iter([
@@ -247,6 +353,20 @@ def test_exact_operational_result_does_not_need_second_model_call(monkeypatch):
     result = runtime.answer("list", [], fake_db(), object(), object(), object())
     assert calls == [1]
     assert "Lobby (Main) — online" in result["answer"]
+
+
+def test_search_event_answer_formats_only_returned_event_fields():
+    answer = AgentRuntime._operational_answer("search_events", {"events": [{
+        "summary": "Door forced open", "severity": "critical", "camera_name": "Lobby",
+        "created_at": "2026-09-21T05:48:07Z",
+    }]})
+
+    assert "Door forced open" in answer
+    assert "critical · Lobby · 2026-09-21T05:48:07Z" in answer
+
+
+def test_empty_search_results_get_a_deterministic_answer():
+    assert AgentRuntime._operational_answer("search_events", {"events": []}) == "No events matched those filters."
 
 
 def test_required_tool_arguments_are_rejected_before_execution():
