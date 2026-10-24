@@ -124,3 +124,21 @@ AGENT_API_KEY = os.environ.get("ARGUS_AGENT_API_KEY", "")
 AGENT_MAX_STEPS = max(1, min(int(os.environ.get("ARGUS_AGENT_MAX_STEPS", "8")), 16))
 AGENT_TIMEOUT_SECONDS = max(5, int(os.environ.get("ARGUS_AGENT_TIMEOUT_SECONDS", "90")))
 AGENT_FAILURE_COOLDOWN_SECONDS = max(1, int(os.environ.get("ARGUS_AGENT_FAILURE_COOLDOWN_SECONDS", "30")))
+
+# Jev can route requests to a bounded Argus tool before execution. Requests that
+# need multi-step planning or receive an uncertain route fall back to the
+# instruction model. With no TypeSafe key, routing is disabled automatically.
+TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY", "")
+JEV_ROUTING_MODE = os.environ.get("ARGUS_JEV_ROUTING_MODE", "active").strip().lower()
+if JEV_ROUTING_MODE not in ("off", "shadow", "active"):
+    JEV_ROUTING_MODE = "off"
+try:
+    JEV_ROUTE_THRESHOLD = max(0.0, min(1.0, float(os.environ.get("ARGUS_JEV_ROUTE_THRESHOLD", "0.65"))))
+except ValueError:
+    JEV_ROUTE_THRESHOLD = 0.65
+JEV_VERIFY_ANSWERS = os.environ.get("ARGUS_JEV_VERIFY_ANSWERS", "1").strip().lower() in ("1", "true", "yes", "on")
+try:
+    JEV_VERIFY_THRESHOLD = max(0.5, min(1.0, float(os.environ.get("ARGUS_JEV_VERIFY_THRESHOLD", "0.8"))))
+except ValueError:
+    JEV_VERIFY_THRESHOLD = 0.8
+JEV_TIMEOUT_SECONDS = max(1, min(15, int(os.environ.get("ARGUS_JEV_TIMEOUT_SECONDS", "5"))))

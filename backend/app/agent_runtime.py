@@ -54,6 +54,54 @@ TOOLS = [
 TOOL_BY_NAME = {item["function"]["name"]: item for item in TOOLS}
 
 
+def _closed_argument_paths(schema):
+    paths = set()
+
+    def visit(current, prefix=""):
+        for name, field in (current.get("properties") or {}).items():
+            path = f"{prefix}.{name}" if prefix else name
+            if field.get("type") == "object":
+                visit(field, path)
+            elif field.get("enum") or field.get("type") == "boolean":
+                paths.add(path)
+
+    visit(schema or {})
+    return paths
+
+
+def _without_paths(arguments, paths):
+    cleaned = dict(arguments or {})
+    for path in paths:
+        cursor = cleaned
+        parts = path.split(".")
+        for part in parts[:-1]:
+            cursor = cursor.get(part) if isinstance(cursor, dict) else None
+        if isinstance(cursor, dict):
+            cursor.pop(parts[-1], None)
+
+    def prune(value):
+        if not isinstance(value, dict):
+            return value
+        for key in list(value):
+            if isinstance(value[key], dict):
+                value[key] = prune(value[key])
+                if not value[key]:
+                    value.pop(key)
+        return value
+
+    return prune(cleaned)
+
+
+def _merge_arguments(base, typed):
+    merged = dict(base or {})
+    for key, value in (typed or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_arguments(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _tool_hint(item):
     function = item["function"]
     parameters = function.get("parameters") or {}
@@ -64,6 +112,8 @@ def _tool_hint(item):
 
 TOOL_CATALOG = "; ".join(_tool_hint(item) for item in TOOLS)
 LOAD_TOOLS = {"type": "function", "function": {"name": "load_tools", "description": "Load schemas by exact names from the system catalog.", "parameters": {"type": "object", "required": ["names"], "properties": {"names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4}}, "additionalProperties": False}}}
+# Search results usually feed a follow-up step, so they end the turn only when Jev routed the request.
+ROUTED_ONLY_ANSWER_TOOLS = {"search_events", "search_observations"}
 CALL_ARGUS_TOOL = {"type": "function", "function": {"name": "call_argus_tool", "description": "Call one exact tool from the system catalog.", "parameters": {"type": "object", "required": ["name", "arguments"], "properties": {"name": {"type": "string"}, "arguments": {"type": "object"}}, "additionalProperties": False}}}
 OLLAMA_PLAN_FORMAT = {"type": "object", "properties": {
     "tool": {"type": "string", "enum": ["", *TOOL_BY_NAME]},
@@ -204,6 +254,34 @@ class AgentRuntime:
         arguments.update(camera_bindings)
         return arguments
 
+    def _extract_routed_arguments(self, messages, tool, jev_arguments=None):
+        function = TOOL_BY_NAME[tool]["function"]
+        schema = function.get("parameters") or {"type": "object", "properties": {}}
+        if not schema.get("properties"):
+            return {}
+        if self._is_ollama():
+            arguments = self._ollama_extract_arguments(messages, tool)
+        else:
+            message = self._complete(messages, tools=[TOOL_BY_NAME[tool]], force_tool_name=tool)
+            calls = message.get("tool_calls") or []
+            if not calls:
+                raise AgentUnavailable("The instruction model could not fill the selected tool arguments.")
+            function_call = calls[0].get("function") or {}
+            if function_call.get("name") != tool:
+                raise AgentUnavailable("The instruction model did not fill the selected tool arguments.")
+            arguments = function_call.get("arguments") or "{}"
+            if isinstance(arguments, str):
+                arguments = json.loads(arguments)
+            if not isinstance(arguments, dict):
+                raise AgentUnavailable("The instruction model returned invalid tool arguments.")
+
+        # Jev owns finite-choice fields. Strip model guesses for those fields,
+        # then apply only Jev's confidence-gated typed values.
+        arguments = _without_paths(arguments, _closed_argument_paths(schema))
+        arguments = _merge_arguments(arguments, jev_arguments)
+        allowed = set(schema.get("properties") or {})
+        return {key: value for key, value in arguments.items() if key in allowed}
+
     @staticmethod
     def _ollama_messages(messages):
         native = []
@@ -236,7 +314,7 @@ class AgentRuntime:
         arguments = function.get("arguments")
         call["function"]["arguments"] += json.dumps(arguments) if isinstance(arguments, dict) else arguments or ""
 
-    def _complete(self, messages, tools=None, on_token=None):
+    def _complete(self, messages, tools=None, on_token=None, force_tool_name=None):
         if not self.configured:
             raise AgentUnavailable("No Argus instruction model is configured.")
         if self._last_failure_at and time.monotonic() - self._last_failure_at < AGENT_FAILURE_COOLDOWN_SECONDS:
@@ -256,6 +334,8 @@ class AgentRuntime:
                 payload["format"] = OLLAMA_PLAN_FORMAT
         else:
             payload.update({"tool_choice": "auto", "temperature": 0.1, "max_tokens": 512, "reasoning_effort": "none"})
+            if force_tool_name:
+                payload["tool_choice"] = {"type": "function", "function": {"name": force_tool_name}}
         try:
             if not stream_response:
                 response = httpx.post(url, headers=headers, json=payload, timeout=AGENT_TIMEOUT_SECONDS)
@@ -349,6 +429,28 @@ class AgentRuntime:
             return (f"Since {result.get('since')}, Argus recorded {result.get('total_observations', 0)} observations "
                     f"and {result.get('total_events', 0)} events. Observation types: {result.get('observation_counts') or {}}. "
                     f"Event severities: {result.get('event_counts') or {}}.")
+        if name == "search_events":
+            rows = result.get("events", [])
+            if not rows:
+                return "No events matched those filters."
+            lines = [f"Matching events ({len(rows)} shown):"]
+            for row in rows[:20]:
+                summary = row.get("summary") or row.get("category") or "Event"
+                camera = row.get("camera_name") or row.get("camera_id")
+                details = [item for item in (row.get("severity"), camera, row.get("created_at")) if item]
+                lines.append(f"- {summary}" + (f" — {' · '.join(details)}" if details else ""))
+            return "\n".join(lines)
+        if name == "search_observations":
+            rows = result.get("observations", [])
+            if not rows:
+                return "No observations matched those filters."
+            lines = [f"Matching observations ({len(rows)} shown):"]
+            for row in rows[:20]:
+                label = row.get("object_type") or row.get("kind") or "Observation"
+                camera = row.get("camera_name") or row.get("camera_id")
+                details = [item for item in (row.get("kind"), camera, row.get("observed_at")) if item]
+                lines.append(f"- {label}" + (f" — {' · '.join(details)}" if details else ""))
+            return "\n".join(lines)
         if name == "list_alert_rules":
             rows = result.get("rules", [])
             if not rows: return "No alert rules are configured."
@@ -468,6 +570,7 @@ class AgentRuntime:
             data = []
             for row in rows:
                 item = row.to_dict()
+                item["camera_name"] = by_id[row.camera_id].name if row.camera_id in by_id else None
                 if item.get("attributes", {}).get("snapshot"):
                     item["attributes"] = {**item["attributes"], "snapshot": "available"}
                 data.append(item)
@@ -483,6 +586,7 @@ class AgentRuntime:
             data = []
             for row in rows:
                 item = row.to_dict()
+                item["camera_name"] = by_id[row.camera_id].name if row.camera_id in by_id else None
                 item["snapshot"] = "available" if item.get("snapshot") else None
                 data.append(item)
             return {"count": len(rows), "events": data}, list(dict.fromkeys(row.camera_id for row in rows)), rows[0].snapshot if rows else None
@@ -643,7 +747,7 @@ class AgentRuntime:
         context["last_tool"] = tool
         return context
 
-    def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, on_token=None, session_id="unsaved", session_context=None):
+    def answer(self, question, history, db, registry, cpu_monitor, vlm, on_status=None, on_token=None, session_id="unsaved", session_context=None, jev_route=None):
         prompt = OLLAMA_SYSTEM_PROMPT if self._is_ollama() else SYSTEM_PROMPT
         messages = [{"role": "system", "content": prompt.format(now=datetime.now(timezone.utc).isoformat(), catalog=TOOL_CATALOG)}]
         if hasattr(db, "query"):
@@ -657,15 +761,83 @@ class AgentRuntime:
         messages.append({"role": "user", "content": question})
         trace, cameras_used, evidence_items, snapshot, pending_actions = [], [], [], None, []
         active_tools = [CALL_ARGUS_TOOL] if self._is_ollama() else [LOAD_TOOLS]
+        route_tool = (jev_route or {}).get("suggested_tool") if (jev_route or {}).get("decision") == "routed" else None
+        if route_tool not in TOOL_BY_NAME:
+            route_tool = None
+        route_applied = False
+        route_decision = (jev_route or {}).get("decision")
+        route_reason = (jev_route or {}).get("reason")
+
+        def route_result():
+            if not jev_route:
+                return None
+            executed = next((item.get("tool") for item in trace
+                             if item.get("tool") not in (None, "", "load_tools")), None)
+            return {
+                "mode": jev_route.get("mode"),
+                "decision": route_decision,
+                "suggested_tool": jev_route.get("suggested_tool"),
+                "executed_tool": executed or ("direct_answer" if route_applied and route_decision == "direct_answer" else None),
+                "confidence": jev_route.get("confidence"),
+                "threshold": jev_route.get("threshold"),
+                "probabilities": jev_route.get("probabilities") or {},
+                "arguments": jev_route.get("arguments") or {},
+                "argument_confidences": jev_route.get("argument_confidences") or {},
+                "reason": route_reason,
+            }
+
         for step in range(self.max_steps):
-            message = self._complete(messages, active_tools, on_token)
+            if step == 0 and route_tool:
+                if on_status:
+                    on_status(f"Jev selected {route_tool.replace('_', ' ')}…")
+                try:
+                    arguments = self._extract_routed_arguments(
+                        messages, route_tool, (jev_route or {}).get("arguments") or {},
+                    )
+                    required = TOOL_BY_NAME[route_tool]["function"].get("parameters", {}).get("required") or []
+                    missing = [field for field in required if arguments.get(field) in (None, "", [])]
+                    if missing:
+                        route_decision = "planner_fallback"
+                        route_reason = f"Qwen needed to resolve required arguments: {', '.join(missing)}."
+                        message = self._complete(messages, active_tools, on_token)
+                    else:
+                        if self._is_ollama():
+                            wire_name = "call_argus_tool"
+                            routed_arguments = {"name": route_tool, "arguments": arguments}
+                            active_tools = [CALL_ARGUS_TOOL]
+                        else:
+                            wire_name = route_tool
+                            routed_arguments = arguments
+                            active_tools = [TOOL_BY_NAME[route_tool]]
+                        message = {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": f"jev-{time.time_ns()}",
+                                "type": "function",
+                                "function": {"name": wire_name, "arguments": json.dumps(routed_arguments)},
+                            }],
+                        }
+                        route_applied = True
+                except Exception as exc:
+                    log.warning("Could not prepare Jev-selected tool; falling back to the planner (%s).", type(exc).__name__)
+                    route_decision = "planner_fallback"
+                    route_reason = "The selected tool arguments could not be prepared; used the Qwen planner."
+                    message = self._complete(messages, active_tools, on_token)
+            elif step == 0 and route_decision == "direct_answer":
+                active_tools = []
+                message = self._complete(messages, active_tools, on_token)
+                route_applied = True
+            else:
+                message = self._complete(messages, active_tools, on_token)
             calls = message.get("tool_calls") or []
             if not calls:
                 content = message.get("content")
                 if not isinstance(content, str) or not content.strip():
                     raise AgentUnavailable("Instruction model returned no answer.")
                 return {"answer": content.strip(), "cameras_used": list(dict.fromkeys(cameras_used)), "evidence": evidence_items,
-                        "snapshot": snapshot, "tool_trace": trace, "pending_actions": pending_actions, "session_context": context, "steps": step + 1}
+                        "snapshot": snapshot, "tool_trace": trace, "pending_actions": pending_actions, "session_context": context,
+                        "steps": step + 1, "jev_route": route_result()}
             messages.append(message)
             used_generic_dispatch = False
             operational_answer = None
@@ -710,13 +882,16 @@ class AgentRuntime:
                 snapshot = snapshot or evidence
                 model_result = self._model_result(name, result)
                 messages.append({"role": "tool", "tool_call_id": call.get("id", f"step-{step}"), "name": wire_name, "content": json.dumps(model_result, default=str)[:6000]})
-                if used_generic_dispatch:
+                if (route_applied and step == 0) or (used_generic_dispatch and name not in ROUTED_ONLY_ANSWER_TOOLS):
                     operational_answer = self._operational_answer(name, result)
-            if used_generic_dispatch:
+            if route_applied and step == 0 and route_tool:
+                active_tools = []
+            if used_generic_dispatch or (route_applied and step == 0):
                 if operational_answer:
                     if on_token: on_token(operational_answer)
                     return {"answer": operational_answer, "cameras_used": list(dict.fromkeys(cameras_used)), "evidence": evidence_items, "snapshot": snapshot,
-                            "tool_trace": trace, "pending_actions": pending_actions, "session_context": context, "steps": step + 1}
+                            "tool_trace": trace, "pending_actions": pending_actions, "session_context": context,
+                            "steps": step + 1, "jev_route": route_result()}
         raise AgentUnavailable(f"Agent exceeded its {self.max_steps}-step limit.")
 
 

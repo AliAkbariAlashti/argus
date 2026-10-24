@@ -441,6 +441,7 @@ async function loadChatHistory() {
         scope: agentData.scope,
         evidence: agentData.evidence,
         toolTrace: agentData.tool_trace,
+        jev: agentData.jev,
         pendingActions: (agentData.pending_action_ids || []).map(id => actionsById.get(id)).filter(Boolean),
       });
     }
@@ -515,7 +516,7 @@ function renderChat() {
     return;
   }
   for (const msg of chatLog) {
-    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot, msg.scope, msg.evidence, msg.pendingActions, msg.toolTrace);
+    appendMessageEl(msg.role, msg.text, msg.thinking, msg.camerasUsed, msg.snapshot, msg.scope, msg.evidence, msg.pendingActions, msg.toolTrace, msg.jev);
   }
   el.chatLog.scrollTop = el.chatLog.scrollHeight;
 }
@@ -529,7 +530,7 @@ function camerasUsedLabel(camIds) {
   return names.length === 1 ? names[0] : names.join(", ");
 }
 
-function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evidence, pendingActions, toolTrace) {
+function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evidence, pendingActions, toolTrace, jev) {
   const bubble = document.createElement("div");
   bubble.className = `msg msg-${role}` + (thinking ? " thinking" : "");
 
@@ -615,6 +616,61 @@ function appendMessageEl(role, text, thinking, camerasUsed, snapshot, scope, evi
       const row = document.createElement("li");
       const failed = item.status === "failed" || Boolean(item.result?.error);
       row.innerHTML = `<span>${escapeHtml((item.tool || "unknown").replaceAll("_", " "))}</span><em class="${failed ? "failed" : "ok"}">${failed ? "failed" : "completed"}</em>`;
+      list.appendChild(row);
+    }
+    details.appendChild(list);
+    bubble.appendChild(details);
+  }
+
+  if (role === "ai" && jev) {
+    const routing = jev.routing || {};
+    const check = jev.answer_check || {};
+    const routeLabel = routing.decision === "routed"
+      ? `routed · ${(routing.suggested_tool || routing.executed_tool || "tool").replaceAll("_", " ")}`
+      : routing.decision === "direct_answer" ? "direct answer"
+      : routing.decision === "planner_fallback" || routing.decision === "service_fallback" ? "Qwen fallback"
+      : routing.mode === "shadow" ? "shadow comparison" : "route unavailable";
+    const checkLabel = check.status === "supported" ? `evidence supported · ${Math.round(check.support_probability * 100)}%`
+      : check.status === "review" ? `review recommended · ${Math.round(check.support_probability * 100)}%`
+      : check.status === "unavailable" ? "evidence check unavailable"
+      : check.status === "skipped" ? "evidence check skipped"
+      : "evidence check off";
+    const badge = document.createElement("div");
+    badge.className = `jev-badge${check.status === "review" || check.status === "unavailable" ? " attention" : ""}`;
+    badge.textContent = `Jev · ${routeLabel} · ${checkLabel}`;
+    bubble.appendChild(badge);
+
+    const details = document.createElement("details");
+    details.className = "agent-jev-details";
+    details.innerHTML = "<summary>Jev decision details</summary>";
+    const list = document.createElement("div");
+    list.className = "agent-jev-values";
+    const rows = [];
+    if (routing.suggested_tool) rows.push(["Suggested tool", routing.suggested_tool.replaceAll("_", " ")]);
+    if (routing.executed_tool) rows.push(["Executed path", routing.executed_tool.replaceAll("_", " ")]);
+    if (routing.confidence != null) rows.push(["Route confidence", `${Math.round(routing.confidence * 100)}% · threshold ${Math.round((routing.threshold ?? 0) * 100)}%`]);
+    const addArgumentRows = (values, prefix = "") => {
+      for (const [key, value] of Object.entries(values || {})) {
+        const path = prefix ? `${prefix}.${key}` : key;
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          addArgumentRows(value, path);
+          continue;
+        }
+        const confidence = routing.argument_confidences?.[path];
+        rows.push([`Jev argument · ${path}`, `${String(value)}${confidence == null ? "" : ` · ${Math.round(confidence * 100)}%`}`]);
+      }
+    };
+    addArgumentRows(routing.arguments);
+    if (check.support_probability != null) rows.push(["Evidence support", `${Math.round(check.support_probability * 100)}% · threshold ${Math.round((check.threshold ?? 0) * 100)}%`]);
+    if (routing.reason) rows.push(["Routing note", routing.reason]);
+    if (routing.mode === "shadow") rows.push(["Mode", "Shadow suggestions are recorded; Argus chooses the tool."]);
+    for (const [label, value] of rows) {
+      const row = document.createElement("div");
+      const key = document.createElement("span");
+      const val = document.createElement("strong");
+      key.textContent = label;
+      val.textContent = value;
+      row.append(key, val);
       list.appendChild(row);
     }
     details.appendChild(list);
@@ -753,7 +809,7 @@ el.chatForm.addEventListener("submit", async (e) => {
         el.chatLog.scrollTop = el.chatLog.scrollHeight;
       }
     });
-    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot, scope: data.scope, evidence: data.evidence, pendingActions: data.pending_actions, toolTrace: data.tool_trace });
+    chatLog.push({ role: "ai", text: data.answer, camerasUsed: data.cameras_used, snapshot: data.snapshot, scope: data.scope, evidence: data.evidence, pendingActions: data.pending_actions, toolTrace: data.tool_trace, jev: data.jev });
     const resultType = data.evidence?.length ? `${data.evidence.length} evidence item${data.evidence.length === 1 ? "" : "s"}` : data.snapshot ? "Evidence attached" : (data.scope || "Completed");
     progress.textContent = `Agent complete · ${data.elapsed_seconds}s · ${resultType}`;
   } catch (err) {

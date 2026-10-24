@@ -115,6 +115,54 @@ class AgentToolRun(Base):
                 "duration_ms": self.duration_ms, "created_at": _utc_iso(self.created_at)}
 
 
+class JevRun(Base):
+    """Outcome metadata for Jev routing and evidence checks.
+
+    Deliberately excludes the user question, generated answer, and evidence;
+    those values are sent to TypeSafe for inference but are not copied here.
+    """
+
+    __tablename__ = "jev_runs"
+    __table_args__ = (Index("ix_jev_runs_session_time", "session_id", "created_at"),)
+
+    id = Column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    session_id = Column(String(32), nullable=True)
+    task = Column(String(32), nullable=False)
+    suggested_tool = Column(String(80), nullable=True)
+    route_confidence = Column(Float, nullable=True)
+    route_probabilities = Column(JSON, nullable=False, default=dict)
+    routing_mode = Column(String(16), nullable=True)
+    route_decision = Column(String(32), nullable=True)
+    executed_tool = Column(String(80), nullable=True)
+    baseline_tool = Column(String(80), nullable=True)
+    agreement = Column(Boolean, nullable=True)
+    support_probability = Column(Float, nullable=True)
+    status = Column(String(32), nullable=False)
+    duration_ms = Column(Integer, nullable=False, default=0)
+    model = Column(String(80), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "task": self.task,
+            "suggested_tool": self.suggested_tool,
+            "route_confidence": self.route_confidence,
+            "route_probabilities": self.route_probabilities or {},
+            "routing_mode": self.routing_mode,
+            "route_decision": self.route_decision,
+            "executed_tool": self.executed_tool,
+            "baseline_tool": self.baseline_tool,
+            "agreement": self.agreement,
+            "support_probability": self.support_probability,
+            "status": self.status,
+            "duration_ms": self.duration_ms,
+            "model": self.model,
+            "created_at": _utc_iso(self.created_at),
+        }
+
+
 class AgentAction(Base):
     """A model-proposed state change that requires an operator decision."""
 
